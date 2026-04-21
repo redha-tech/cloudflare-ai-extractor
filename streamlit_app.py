@@ -7,74 +7,92 @@ import io
 import docx
 import pdfplumber
 
-# --- 1. إعدادات الصفحة وجلب المفاتيح ---
-st.set_page_config(page_title="Clik-Plus Claude Extractor", layout="wide")
+# --- 1. إعداد الصفحة وجلب المفاتيح بنظام UTF-8 ---
+st.set_page_config(page_title="Clik-Plus Claude Vision", layout="wide")
 
 # جلب مفتاح Anthropic من الـ Secrets
 CLAUDE_KEY = st.secrets.get("ANTHROPIC_API_KEY")
 
-# --- 2. دوال معالجة أنواع الملفات المختلفة ---
+# --- 2. دوال معالجة الملفات مع دعم اللغة العربية ---
 
 def extract_text_from_pdf(file):
-    with pdfplumber.open(file) as pdf:
-        return "\n".join([page.extract_text() or "" for page in pdf.pages])
+    try:
+        with pdfplumber.open(file) as pdf:
+            # استخراج النص مع الحفاظ على ترتيب الأسطر لدعم الجداول
+            return "\n".join([page.extract_text() or "" for page in pdf.pages])
+    except Exception as e:
+        return f"Error reading PDF: {str(e)}"
 
 def extract_text_from_docx(file):
-    doc = docx.Document(file)
-    return "\n".join([para.text for para in doc.paragraphs])
+    try:
+        doc = docx.Document(file)
+        return "\n".join([para.text for para in doc.paragraphs])
+    except Exception as e:
+        return f"Error reading DOCX: {str(e)}"
 
 def extract_json_safely(text):
     try:
+        # البحث عن كود الـ JSON داخل رد المحرك
         match = re.search(r'\{.*\}', text, re.DOTALL)
-        return json.loads(match.group()) if match else None
-    except:
+        if match:
+            clean_json = match.group()
+            return json.loads(clean_json)
+        return None
+    except Exception as e:
+        st.error(f"JSON Parsing Error: {e}")
         return None
 
-# --- 3. محرك Anthropic Claude 3.5 Sonnet ---
+# --- 3. محرك الاستخراج الذكي (Claude 3.5 Sonnet) ---
 def process_with_claude(text):
     if not CLAUDE_KEY:
-        st.error("🚨 Anthropic API Key Missing in Secrets!")
+        st.error("🚨 Anthropic API Key is missing in Streamlit Secrets!")
         return None
 
     client = anthropic.Anthropic(api_key=CLAUDE_KEY)
     
-    # البرومبت المخصص لاستخراج بيانات الجمارك
-    system_prompt = (
-        "You are a professional customs documentation expert. "
-        "Your task is to extract item data into a strict JSON format. "
-        "Fields: hs_code, description, qty, unit_price, amount, origin. "
-        "Return ONLY the JSON object."
+    # حل مشكلة ASCII: تنظيف النص وتجهيزه بتشفير UTF-8
+    try:
+        safe_text = text.encode('utf-8', errors='ignore').decode('utf-8')
+    except:
+        safe_text = text
+
+    system_instr = (
+        "You are an expert in customs logistics and international trade. "
+        "Your task is to extract product items from the provided document text. "
+        "Extract these fields: hs_code, description, qty, unit_price, amount, origin. "
+        "The text contains Arabic and English; preserve Arabic text in the 'description' and 'origin' fields. "
+        "Return ONLY a valid JSON object with the key 'items'."
     )
     
     try:
+        # إرسال البيانات لـ Claude
         message = client.messages.create(
             model="claude-3-5-sonnet-20240620",
             max_tokens=4096,
-            system=system_prompt,
+            system=system_instr,
             messages=[
-                {"role": "user", "content": f"Extract the table data from this document text:\n\n{text}"}
+                {"role": "user", "content": f"Extract the table items from this document text:\n\n{safe_text}"}
             ]
         )
         
-        # استلام النص من Claude
-        response_text = message.content[0].text
-        return extract_json_safely(response_text)
+        return extract_json_safely(message.content[0].text)
     except Exception as e:
-        st.error(f"Claude API Error: {e}")
+        st.error(f"Claude API Error: {str(e)}")
         return None
 
-# --- 4. واجهة المستخدم الرسومية ---
-st.title("🚢 Clik-Plus | Claude 3.5 Intelligent Extractor")
-st.markdown("المستخرج الاحترافي يدعم: **PDF, Word, Excel, CSV, Text**")
+# --- 4. واجهة المستخدم (UI) ---
+st.title("🚢 Clik-Plus | Claude 3.5 Vision Extractor")
+st.markdown("المحرك الثالث: يدعم استخراج البيانات المعقدة باللغة العربية والإنجليزية")
 
-uploaded_file = st.file_uploader("ارفع ملفك هنا", type=['pdf', 'docx', 'xlsx', 'xls', 'csv', 'txt'])
+uploaded_file = st.file_uploader("ارفع ملف الفاتورة أو الـ CRO (PDF, Excel, Word, Text)", 
+                                 type=['pdf', 'docx', 'xlsx', 'xls', 'csv', 'txt'])
 
 if uploaded_file:
     ext = uploaded_file.name.split('.')[-1].lower()
     text_content = ""
 
-    try:
-        with st.spinner("جاري قراءة وتحويل الملف..."):
+    with st.spinner("جاري قراءة الملف..."):
+        try:
             if ext in ['xlsx', 'xls']:
                 text_content = pd.read_excel(uploaded_file).to_csv(index=False)
             elif ext == 'csv':
@@ -84,36 +102,38 @@ if uploaded_file:
             elif ext == 'docx':
                 text_content = extract_text_from_docx(uploaded_file)
             else:
-                text_content = uploaded_file.read().decode("utf-8")
+                text_content = uploaded_file.read().decode("utf-8", errors='ignore')
+        except Exception as e:
+            st.error(f"خطأ في قراءة الملف: {e}")
 
-        if st.button("🚀 تحليل باستخدام Claude 3.5 Sonnet", use_container_width=True, type="primary"):
-            if not text_content.strip():
-                st.warning("⚠️ الملف فارغ أو لا يحتوي على نص قابل للقراءة.")
-            else:
-                with st.spinner("Claude يقوم بتحليل البيانات الآن..."):
-                    data = process_with_claude(text_content)
+    if st.button("🚀 ابدأ التحليل الاحترافي", use_container_width=True, type="primary"):
+        if not text_content.strip():
+            st.warning("⚠️ الملف فارغ أو تعذر استخراج النص منه.")
+        else:
+            with st.spinner("Claude 3.5 يقوم بتحليل الجداول الآن..."):
+                data = process_with_claude(text_content)
+                
+                if data and 'items' in data:
+                    df_final = pd.DataFrame(data['items'])
+                    st.success(f"✅ تم استخراج {len(df_final)} صنف بنجاح")
                     
-                    if data and 'items' in data:
-                        df_final = pd.DataFrame(data['items'])
-                        st.success(f"✅ تم استخراج {len(df_final)} صنف بدقة!")
-                        st.dataframe(df_final, use_container_width=True)
-                        
-                        # تصدير إكسل
-                        buf = io.BytesIO()
-                        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-                            df_final.to_excel(writer, index=False)
-                        
-                        st.download_button(
-                            "📥 تحميل النتائج كملف Excel",
-                            buf.getvalue(),
-                            f"Claude_Extracted_{uploaded_file.name}.xlsx",
-                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=True
-                        )
-                    else:
-                        st.error("❌ فشل Claude في تحليل البيانات. تأكد من وضوح الملف أو صلاحية المفتاح.")
-    except Exception as e:
-        st.error(f"حدث خطأ أثناء معالجة الملف: {e}")
+                    # عرض الجدول
+                    st.dataframe(df_final, use_container_width=True)
+                    
+                    # إنشاء ملف إكسل للتحميل
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                        df_final.to_excel(writer, index=False)
+                    
+                    st.download_button(
+                        label="📥 تحميل النتائج (Excel)",
+                        data=output.getvalue(),
+                        file_name=f"Extracted_{uploaded_file.name}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+                else:
+                    st.error("❌ فشل المحرك في تنظيم البيانات. يرجى التأكد من وضوح الملف.")
 
-st.markdown("---")
-st.caption("نظام Clik-Plus | مدعوم بمحرك Anthropic Claude 3.5 Sonnet")
+st.divider()
+st.caption("Powered by Anthropic Claude 3.5 Sonnet | Clik-Plus v3.0")
