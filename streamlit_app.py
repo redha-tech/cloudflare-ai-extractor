@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import requests
+import anthropic
 import json
 import re
 import io
@@ -8,10 +8,10 @@ import docx
 import pdfplumber
 
 # --- 1. إعدادات الصفحة وجلب المفاتيح ---
-st.set_page_config(page_title="Clik-Plus Universal Extractor", layout="wide")
+st.set_page_config(page_title="Clik-Plus Claude Extractor", layout="wide")
 
-CF_ID = st.secrets.get("CF_ACCOUNT_ID")
-CF_TOKEN = st.secrets.get("CF_AUTH_TOKEN")
+# جلب مفتاح Anthropic من الـ Secrets
+CLAUDE_KEY = st.secrets.get("ANTHROPIC_API_KEY")
 
 # --- 2. دوال معالجة أنواع الملفات المختلفة ---
 
@@ -30,42 +30,42 @@ def extract_json_safely(text):
     except:
         return None
 
-# --- 3. محرك Cloudflare AI ---
-def process_with_cloudflare(text):
-    if not CF_ID or not CF_TOKEN:
-        st.error("🚨 Cloudflare Credentials Missing!")
+# --- 3. محرك Anthropic Claude 3.5 Sonnet ---
+def process_with_claude(text):
+    if not CLAUDE_KEY:
+        st.error("🚨 Anthropic API Key Missing in Secrets!")
         return None
 
-    url = f"https://api.cloudflare.com/client/v4/accounts/{CF_ID}/ai/run/@cf/meta/llama-3-8b-instruct"
-    headers = {"Authorization": f"Bearer {CF_TOKEN}"}
+    client = anthropic.Anthropic(api_key=CLAUDE_KEY)
     
-    payload = {
-        "messages": [
-            {
-                "role": "system", 
-                "content": "You are a professional customs data extractor. Return JSON ONLY. Format: {'items': [{'hs_code': '...', 'description': '...', 'qty': 0, 'unit_price': 0, 'amount': 0, 'origin': '...'}]}"
-            },
-            {"role": "user", "content": f"Extract the table data from this text into JSON:\n\n{text[:4000]}"} # نرسل أول 4000 حرف لضمان السرعة
-        ]
-    }
+    # البرومبت المخصص لاستخراج بيانات الجمارك
+    system_prompt = (
+        "You are a professional customs documentation expert. "
+        "Your task is to extract item data into a strict JSON format. "
+        "Fields: hs_code, description, qty, unit_price, amount, origin. "
+        "Return ONLY the JSON object."
+    )
     
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        if response.status_code != 200:
-            st.error(f"Cloudflare Error {response.status_code}: {response.text}")
-            return None
-            
-        result = response.json()
-        if result.get("success"):
-            return extract_json_safely(result["result"]["response"])
-        return None
+        message = client.messages.create(
+            model="claude-3-5-sonnet-20240620",
+            max_tokens=4096,
+            system=system_prompt,
+            messages=[
+                {"role": "user", "content": f"Extract the table data from this document text:\n\n{text}"}
+            ]
+        )
+        
+        # استلام النص من Claude
+        response_text = message.content[0].text
+        return extract_json_safely(response_text)
     except Exception as e:
-        st.error(f"Connection Error: {e}")
+        st.error(f"Claude API Error: {e}")
         return None
 
 # --- 4. واجهة المستخدم الرسومية ---
-st.title("🚢 Clik-Plus | Universal AI Extractor")
-st.markdown("يدعم الملفات: **PDF, Word, Excel, CSV, Text**")
+st.title("🚢 Clik-Plus | Claude 3.5 Intelligent Extractor")
+st.markdown("المستخرج الاحترافي يدعم: **PDF, Word, Excel, CSV, Text**")
 
 uploaded_file = st.file_uploader("ارفع ملفك هنا", type=['pdf', 'docx', 'xlsx', 'xls', 'csv', 'txt'])
 
@@ -74,31 +74,28 @@ if uploaded_file:
     text_content = ""
 
     try:
-        # معالجة ملفات Excel و CSV
-        if ext in ['xlsx', 'xls']:
-            text_content = pd.read_excel(uploaded_file).to_csv(index=False)
-        elif ext == 'csv':
-            text_content = pd.read_csv(uploaded_file).to_csv(index=False)
-        # معالجة ملفات PDF
-        elif ext == 'pdf':
-            text_content = extract_text_from_pdf(uploaded_file)
-        # معالجة ملفات Word
-        elif ext == 'docx':
-            text_content = extract_text_from_docx(uploaded_file)
-        # معالجة ملفات النص
-        else:
-            text_content = uploaded_file.read().decode("utf-8")
-
-        if st.button("🚀 ابدأ تحليل الملف الآن", use_container_width=True, type="primary"):
-            if not text_content.strip():
-                st.warning("⚠️ الملف فارغ أو لا يمكن قراءة النص منه.")
+        with st.spinner("جاري قراءة وتحويل الملف..."):
+            if ext in ['xlsx', 'xls']:
+                text_content = pd.read_excel(uploaded_file).to_csv(index=False)
+            elif ext == 'csv':
+                text_content = pd.read_csv(uploaded_file).to_csv(index=False)
+            elif ext == 'pdf':
+                text_content = extract_text_from_pdf(uploaded_file)
+            elif ext == 'docx':
+                text_content = extract_text_from_docx(uploaded_file)
             else:
-                with st.spinner("جاري المعالجة عبر Cloudflare AI..."):
-                    data = process_with_cloudflare(text_content)
+                text_content = uploaded_file.read().decode("utf-8")
+
+        if st.button("🚀 تحليل باستخدام Claude 3.5 Sonnet", use_container_width=True, type="primary"):
+            if not text_content.strip():
+                st.warning("⚠️ الملف فارغ أو لا يحتوي على نص قابل للقراءة.")
+            else:
+                with st.spinner("Claude يقوم بتحليل البيانات الآن..."):
+                    data = process_with_claude(text_content)
                     
                     if data and 'items' in data:
                         df_final = pd.DataFrame(data['items'])
-                        st.success(f"تم استخراج {len(df_final)} صنف بنجاح!")
+                        st.success(f"✅ تم استخراج {len(df_final)} صنف بدقة!")
                         st.dataframe(df_final, use_container_width=True)
                         
                         # تصدير إكسل
@@ -109,14 +106,14 @@ if uploaded_file:
                         st.download_button(
                             "📥 تحميل النتائج كملف Excel",
                             buf.getvalue(),
-                            f"extracted_{uploaded_file.name}.xlsx",
+                            f"Claude_Extracted_{uploaded_file.name}.xlsx",
                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             use_container_width=True
                         )
                     else:
-                        st.error("❌ فشل الاستخراج. تأكد من جودة الملف أو صلاحيات التوكن.")
+                        st.error("❌ فشل Claude في تحليل البيانات. تأكد من وضوح الملف أو صلاحية المفتاح.")
     except Exception as e:
-        st.error(f"حدث خطأ أثناء قراءة الملف: {e}")
+        st.error(f"حدث خطأ أثناء معالجة الملف: {e}")
 
 st.markdown("---")
-st.caption("نظام Clik-Plus المطور | يعمل بمحرك Cloudflare Llama 3")
+st.caption("نظام Clik-Plus | مدعوم بمحرك Anthropic Claude 3.5 Sonnet")
