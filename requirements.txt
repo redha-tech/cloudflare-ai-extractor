@@ -2,3 +2,4 @@ streamlit
 mistralai
 pandas
 xlsxwriter
+openpyxl
