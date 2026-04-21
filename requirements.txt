@@ -1,6 +1,4 @@
 streamlit
-anthropic
+mistralai
 pandas
 xlsxwriter
-python-docx
-pdfplumber
