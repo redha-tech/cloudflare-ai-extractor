@@ -1,5 +1,5 @@
-streamlit==1.32.0
-mistralai==1.2.0
+streamlit
+mistralai
 pandas
 xlsxwriter
 openpyxl
