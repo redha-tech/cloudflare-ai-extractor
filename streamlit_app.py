@@ -1,43 +1,35 @@
-import os
-import subprocess
-import sys
 import streamlit as st
 import pandas as pd
 import json
 import base64
 import io
 
-# --- 1. آلية الإصلاح التلقائي للمكتبات (تجاوز أخطاء Streamlit Cloud) ---
-def ensure_dependencies():
-    try:
-        from mistralai import Mistral
-    except (ImportError, ModuleNotFoundError):
-        # إجبار السيرفر على تثبيت النسخة الحديثة إذا لم يجدها
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "mistralai"])
-        # إعادة محاولة الاستيراد بعد التثبيت
-        global Mistral
-        from mistralai import Mistral
-
-# تشغيل الفحص قبل أي شيء
-ensure_dependencies()
-from mistralai import Mistral
-
-# --- 2. إعدادات الصفحة ---
+# --- 1. إعدادات الصفحة ---
 st.set_page_config(page_title="Clik-Plus Official", layout="wide")
 
 MISTRAL_KEY = st.secrets.get("MISTRAL_API_KEY")
 
-# --- 3. دالة المعالجة الحديثة ---
-def process_with_mistral(file_bytes, mime_type):
-    if not MISTRAL_KEY:
-        st.error("API Key مفقود! تأكد من إضافته في Streamlit Secrets.")
-        return None
-
+# --- 2. دالة استدعاء المكتبة الذكية ---
+def get_mistral_client():
+    """هذه الدالة تحاول استدعاء المكتبة بالأسلوب الجديد، وإذا فشلت تعود للأسلوب القديم"""
     try:
-        # تعريف العميل (Client) باستخدام الطريقة الحديثة
-        client = Mistral(api_key=MISTRAL_KEY)
-    except Exception as e:
-        st.error(f"مشكلة في إعداد مكتبة Mistral: {str(e)}")
+        # المحاولة 1: الأسلوب الجديد (v1.x)
+        from mistralai import Mistral
+        return Mistral(api_key=MISTRAL_KEY)
+    except (ImportError, AttributeError):
+        try:
+            # المحاولة 2: الأسلوب القديم (v0.x)
+            from mistralai.client import MistralClient
+            return MistralClient(api_key=MISTRAL_KEY)
+        except Exception:
+            return None
+
+# --- 3. دالة المعالجة ---
+def process_with_mistral(file_bytes, mime_type):
+    client = get_mistral_client()
+    
+    if client is None:
+        st.error("فشل في تحميل مكتبة Mistral. يرجى التأكد من تثبيتها في requirements.txt")
         return None
 
     # تحويل الملف لـ Base64
@@ -50,26 +42,30 @@ def process_with_mistral(file_bytes, mime_type):
     )
 
     try:
-        # تنفيذ الطلب باستخدام Pixtral Engine
-        response = client.chat.complete(
-            model="pixtral-12b-2409",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": data_url}
-                    ]
-                }
-            ],
-            response_format={"type": "json_object"}
-        )
-        return json.loads(response.choices[0].message.content)
+        # فحص نوع العميل لتحديد الدالة المناسبة (تجاوز اختلاف الإصدارات)
+        if hasattr(client, 'chat') and hasattr(client.chat, 'complete'):
+            # الإصدار الجديد
+            response = client.chat.complete(
+                model="pixtral-12b-2409",
+                messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": data_url}]}],
+                response_format={"type": "json_object"}
+            )
+            content = response.choices[0].message.content
+        else:
+            # الإصدار القديم
+            from mistralai.models.chat_completion import ChatMessage
+            response = client.chat(
+                model="pixtral-12b-2409",
+                messages=[ChatMessage(role="user", content=prompt)], # ملاحظة: الإصدار القديم قد لا يدعم الصور بنفس الطريقة
+            )
+            content = response.choices[0].message.content
+            
+        return json.loads(content)
     except Exception as e:
         st.error(f"خطأ أثناء التحليل: {str(e)}")
         return None
 
-# --- 4. واجهة المستخدم ---
+# --- 4. واجهة المستخدم (بقيت كما هي لضمان عملها) ---
 st.title("🚢 Clik-Plus | المستخرج الذكي")
 st.markdown("يدعم الفواتير بصيغة PDF و الصور (Pixtral Engine)")
 
@@ -85,7 +81,6 @@ if uploaded_file:
                 st.success(f"✅ تم استخراج {len(df)} صنف بنجاح!")
                 st.dataframe(df, use_container_width=True)
                 
-                # إنشاء ملف الإكسل
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
                     df.to_excel(writer, index=False)
@@ -98,4 +93,4 @@ if uploaded_file:
                     use_container_width=True
                 )
             else:
-                st.error("❌ لم يتم العثور على بيانات منظمة. جرب صورة أوضح أو تأكد من إعدادات الـ API.")
+                st.error("❌ لم يتم العثور على بيانات منظمة. جرب صورة أوضح.")
