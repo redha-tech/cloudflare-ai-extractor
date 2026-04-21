@@ -1,23 +1,43 @@
+import os
+import subprocess
+import sys
 import streamlit as st
 import pandas as pd
 import json
 import base64
 import io
-import importlib
 
-# --- 1. إعدادات الصفحة ---
+# --- 1. آلية الإصلاح التلقائي للمكتبات (تجاوز أخطاء Streamlit Cloud) ---
+def ensure_dependencies():
+    try:
+        from mistralai import Mistral
+    except (ImportError, ModuleNotFoundError):
+        # إجبار السيرفر على تثبيت النسخة الحديثة إذا لم يجدها
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "mistralai"])
+        # إعادة محاولة الاستيراد بعد التثبيت
+        global Mistral
+        from mistralai import Mistral
+
+# تشغيل الفحص قبل أي شيء
+ensure_dependencies()
+from mistralai import Mistral
+
+# --- 2. إعدادات الصفحة ---
 st.set_page_config(page_title="Clik-Plus Official", layout="wide")
 
 MISTRAL_KEY = st.secrets.get("MISTRAL_API_KEY")
 
-# --- 2. دالة المعالجة الحديثة ---
+# --- 3. دالة المعالجة الحديثة ---
 def process_with_mistral(file_bytes, mime_type):
+    if not MISTRAL_KEY:
+        st.error("API Key مفقود! تأكد من إضافته في Streamlit Secrets.")
+        return None
+
     try:
-        # استيراد المكتبة بالطريقة الحديثة فقط
-        from mistralai import Mistral
+        # تعريف العميل (Client) باستخدام الطريقة الحديثة
         client = Mistral(api_key=MISTRAL_KEY)
     except Exception as e:
-        st.error(f"مشكلة في مكتبة Mistral: {str(e)}")
+        st.error(f"مشكلة في إعداد مكتبة Mistral: {str(e)}")
         return None
 
     # تحويل الملف لـ Base64
@@ -30,7 +50,7 @@ def process_with_mistral(file_bytes, mime_type):
     )
 
     try:
-        # تنفيذ الطلب باستخدام الطريقة الحديثة للـ SDK
+        # تنفيذ الطلب باستخدام Pixtral Engine
         response = client.chat.complete(
             model="pixtral-12b-2409",
             messages=[
@@ -49,7 +69,7 @@ def process_with_mistral(file_bytes, mime_type):
         st.error(f"خطأ أثناء التحليل: {str(e)}")
         return None
 
-# --- 3. واجهة المستخدم ---
+# --- 4. واجهة المستخدم ---
 st.title("🚢 Clik-Plus | المستخرج الذكي")
 st.markdown("يدعم الفواتير بصيغة PDF و الصور (Pixtral Engine)")
 
@@ -78,4 +98,4 @@ if uploaded_file:
                     use_container_width=True
                 )
             else:
-                st.error("❌ لم يتم العثور على بيانات منظمة. جرب صورة أوضح.")
+                st.error("❌ لم يتم العثور على بيانات منظمة. جرب صورة أوضح أو تأكد من إعدادات الـ API.")
