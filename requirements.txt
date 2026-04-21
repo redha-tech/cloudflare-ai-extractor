@@ -4,3 +4,4 @@ requests
 openpyxl
 xlsxwriter
 python-docx
+pdfplumber
