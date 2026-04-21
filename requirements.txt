@@ -1,4 +1,5 @@
 streamlit
-mistralai
+mistralai>=1.0.0
 pandas
 xlsxwriter
+openpyxl
