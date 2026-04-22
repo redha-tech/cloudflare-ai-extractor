@@ -18,6 +18,7 @@ st.markdown("""
     <style>
     .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #FF4B4B; color: white; }
     .stDataFrame { border: 1px solid #e6e9ef; border-radius: 5px; }
+    .total-box { padding: 10px; background-color: #f0f2f6; border-radius: 10px; margin-top: 10px; border-left: 5px solid #FF4B4B; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -33,7 +34,6 @@ def process_with_pixtral(file_bytes, mime_type):
         actual_mime = mime_type if "pdf" not in mime_type else "image/jpeg"
         data_url = f"data:{actual_mime};base64,{base64_file}"
 
-        # تحديث الـ Prompt ليشمل الوزن (Weight)
         prompt = (
             "Extract items into JSON with these keys: "
             "hs_code, description, qty, unit_price, amount, origin, weight. "
@@ -116,33 +116,41 @@ if uploaded_file:
             if final_items:
                 df = pd.DataFrame(final_items)
                 
-                # 1. جعل الترقيم يبدأ من 1
+                # جعل الترقيم يبدأ من 1
                 df.index = df.index + 1
                 df.index.name = "#"
 
-                # 2. التحقق من القيم الصفرية أو الخصومات
+                # تنبيه القيم الصفرية في سطر واحد
                 zero_val_items = []
                 for idx, row in df.iterrows():
-                    # التحقق من السعر أو المجموع (Amount)
                     try:
                         price = float(row.get('unit_price', 0))
                         amount = float(row.get('amount', 0))
-                        desc = row.get('description', f'Item {idx}')
-                        
                         if price <= 0 or amount <= 0:
-                            zero_val_items.append(f"الصنف #{idx}: {desc}")
+                            zero_val_items.append(str(idx))
                     except:
                         continue
 
                 if zero_val_items:
-                    st.warning("⚠️ تنبيه: تم العثور على أصناف بقيمة صفرية أو خصم:")
-                    for item in zero_val_items:
-                        st.write(f"- {item}")
+                    st.warning(f"⚠️ تنبيه: أصناف بقيمة صفرية أو خصم (رقم): {', '.join(zero_val_items)}")
 
                 # عرض النتائج
                 st.success(f"✅ تم استخراج {len(df)} صنف بنجاح!")
                 st.dataframe(df, use_container_width=True)
                 
+                # --- القسم الديناميكي للمجاميع ---
+                try:
+                    total_amount = pd.to_numeric(df['amount'], errors='coerce').sum()
+                    total_weight = pd.to_numeric(df['weight'], errors='coerce').sum()
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown(f"<div class='total-box'><h3>💰 إجمالي المبلغ: {total_amount:,.2f}</h3></div>", unsafe_allow_html=True)
+                    with col2:
+                        st.markdown(f"<div class='total-box'><h3>⚖️ إجمالي الوزن: {total_weight:,.2f}</h3></div>", unsafe_allow_html=True)
+                except:
+                    st.info("ملاحظة: تعذر حساب المجاميع تلقائياً بسبب تنسيق البيانات.")
+
                 # تحميل Excel
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
