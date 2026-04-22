@@ -5,13 +5,13 @@ import base64
 import io
 import fitz  # PyMuPDF
 
-# --- 1. آلية الاستيراد المرنة ---
+# --- 1. آلية الاستيراد ---
 try:
     from mistralai import Mistral
 except ImportError:
     from mistralai.client import Mistral
 
-# --- 2. إعدادات الصفحة والواجهة ---
+# --- 2. إعدادات الصفحة ---
 st.set_page_config(page_title="Clik-Plus | Smart OCR", layout="wide", page_icon="🚢")
 
 st.markdown("""
@@ -23,49 +23,36 @@ st.markdown("""
 
 MISTRAL_KEY = st.secrets.get("MISTRAL_API_KEY")
 
-# --- 3. التعليمات الذكية (Prompt) ---
+# --- 3. التعليمات الذكية (القلب النابض للنظام) ---
+# هنا نأمر النظام بالفهم وليس مجرد المطابقة
 MASTER_PROMPT = (
-    "Extract invoice items into JSON with these EXACT keys: "
-    "hs_code, description, qty, unit_price, amount, origin, gross_weight, net_weight, pkg, invoice_number. "
-    "If any field is missing, return null for it. Keep Arabic text. Return ONLY JSON with key 'items'."
+    "You are a logistics data expert. Analyze the provided file content and extract items. "
+    "IMPORTANT: Field names in the file may vary (e.g., 'Item' instead of 'Description', 'Net' instead of 'net_weight'). "
+    "You must map them logically to these keys: "
+    "hs_code, description (keep Arabic), qty, unit_price, amount, origin, gross_weight, net_weight, pkg, invoice_number. "
+    "If a column clearly doesn't exist, return null. Return ONLY a JSON object with key 'items'."
 )
 
 # --- 4. الدوال البرمجية ---
 
-def process_with_pixtral(file_bytes, mime_type):
+def call_ai_model(content, is_image=False, mime_type=None):
     if not MISTRAL_KEY: return None
     try:
         client = Mistral(api_key=MISTRAL_KEY)
-        base64_file = base64.b64encode(file_bytes).decode('utf-8')
-        actual_mime = mime_type if "pdf" not in mime_type else "image/jpeg"
-        data_url = f"data:{actual_mime};base64,{base64_file}"
+        if is_image:
+            base64_file = base64.b64encode(content).decode('utf-8')
+            actual_mime = mime_type if "pdf" not in mime_type else "image/jpeg"
+            data_url = f"data:{actual_mime};base64,{base64_file}"
+            messages = [{"role": "user", "content": [{"type": "text", "text": MASTER_PROMPT}, {"type": "image_url", "image_url": data_url}]}]
+            model = "pixtral-12b-2409"
+        else:
+            messages = [{"role": "user", "content": f"{MASTER_PROMPT}\n\nContent:\n{content}"}]
+            model = "mistral-small-latest"
 
-        response = client.chat.complete(
-            model="pixtral-12b-2409",
-            messages=[{"role": "user", "content": [
-                {"type": "text", "text": MASTER_PROMPT},
-                {"type": "image_url", "image_url": data_url}
-            ]}],
-            response_format={"type": "json_object"}
-        )
+        response = client.chat.complete(model=model, messages=messages, response_format={"type": "json_object"})
         return json.loads(response.choices[0].message.content)
     except Exception as e:
-        st.error(f"Vision Error: {str(e)}")
-        return None
-
-def process_pdf_text(text_content):
-    if not MISTRAL_KEY: return None
-    try:
-        client = Mistral(api_key=MISTRAL_KEY)
-        prompt = f"{MASTER_PROMPT}\n\nText content:\n{text_content}"
-        response = client.chat.complete(
-            model="mistral-small-latest",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}
-        )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        st.error(f"Text Error: {str(e)}")
+        st.error(f"AI Error: {str(e)}")
         return None
 
 # --- 5. واجهة المستخدم ---
@@ -77,86 +64,65 @@ if uploaded_file:
     file_ext = uploaded_file.name.split('.')[-1].lower()
     
     if st.button("🚀 تحليل واستخراج البيانات الآن"):
-        with st.spinner("جاري تحليل البيانات..."):
-            final_items = []
+        with st.spinner("جاري فهم هيكلة الملف واستخراج البيانات..."):
+            extracted_data = None
 
             if file_ext == 'pdf':
-                pdf_content = uploaded_file.getvalue()
-                doc = fitz.open(stream=pdf_content, filetype="pdf")
-                full_text = "".join([page.get_text() for page in doc])
-                doc.close()
-                if full_text.strip():
-                    data = process_pdf_text(full_text)
-                    if data and 'items' in data: final_items = data['items']
+                doc = fitz.open(stream=uploaded_file.getvalue(), filetype="pdf")
+                text = "".join([page.get_text() for page in doc])
+                if text.strip():
+                    extracted_data = call_ai_model(text)
                 else:
-                    doc = fitz.open(stream=pdf_content, filetype="pdf")
-                    for page in doc:
-                        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                        data = process_with_pixtral(pix.tobytes("jpeg"), "image/jpeg")
-                        if data and 'items' in data: final_items.extend(data['items'])
-                    doc.close()
+                    # إذا كان الـ PDF عبارة عن صور
+                    pix = doc[0].get_pixmap(matrix=fitz.Matrix(2, 2))
+                    extracted_data = call_ai_model(pix.tobytes("jpeg"), is_image=True, mime_type="image/jpeg")
+                doc.close()
 
             elif file_ext in ['xlsx', 'xls']:
-                df_raw = pd.read_excel(uploaded_file).ffill()
-                final_items = df_raw.to_dict(orient='records')
+                # تحويل الإكسل لنص لإجبار الذكاء الاصطناعي على فهمه سياقياً
+                df_excel = pd.read_excel(uploaded_file).ffill()
+                extracted_data = call_ai_model(df_excel.to_string())
 
             else:
-                data = process_with_pixtral(uploaded_file.getvalue(), uploaded_file.type)
-                if data and 'items' in data: final_items = data['items']
+                extracted_data = call_ai_model(uploaded_file.getvalue(), is_image=True, mime_type=uploaded_file.type)
 
-            if final_items:
-                df = pd.DataFrame(final_items)
+            # --- المعالجة والعرض ---
+            if extracted_data and 'items' in extracted_data:
+                df = pd.DataFrame(extracted_data['items'])
                 
-                # قائمة الأعمدة الإلزامية التي يجب أن تظهر في الجدول
+                # التأكد من وجود كافة الأعمدة المطلوبة حتى لو لم يجدها النظام
                 required_cols = ['hs_code', 'description', 'qty', 'unit_price', 'amount', 'origin', 'gross_weight', 'net_weight', 'pkg', 'invoice_number']
-                
-                # التأكد من وجود كل عمود، وإذا لم يوجد ننشئه فارغاً
                 for col in required_cols:
-                    if col not in df.columns:
-                        df[col] = "" # أو 0 للأعمدة الرقمية
+                    if col not in df.columns: df[col] = None
 
-                # تنظيف الأعمدة الرقمية للجمع (فقط إذا كانت موجودة وبها بيانات)
-                numeric_cols = ['qty', 'unit_price', 'amount', 'gross_weight', 'net_weight']
-                for col in numeric_cols:
+                # تنظيف البيانات الرقمية للجمع
+                num_cols = ['qty', 'unit_price', 'amount', 'gross_weight', 'net_weight']
+                for col in num_cols:
                     df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-                # تنبيه الخصومات والقيم الصفرية في سطر واحد
-                # نتجنب الخطأ بالتحقق من وجود القيم قبل الفحص
-                zero_indices = df[(df['unit_price'] <= 0) | (df['amount'] <= 0)].index.tolist()
-                if zero_indices:
-                    st.warning(f"⚠️ تنبيه: قيم صفرية أو خصومات في الأسطر: {', '.join([f'#{i+1}' for i in zero_indices])}")
+                # تنبيه الخصومات (في سطر واحد)
+                zeros = df[df['amount'] <= 0].index.tolist()
+                if zeros:
+                    st.warning(f"⚠️ تنبيه: قيم صفرية في الأسطر: {', '.join([f'#{i+1}' for i in zeros])}")
 
-                # --- إضافة سطر TOTAL الديناميكي ---
-                totals = {
-                    'description': '--- TOTAL ---',
-                    'qty': df['qty'].sum(),
-                    'amount': df['amount'].sum(),
-                    'gross_weight': df['gross_weight'].sum(),
-                    'net_weight': df['net_weight'].sum()
-                }
-                # باقي الأعمدة في سطر التوتال تكون فارغة
-                for col in required_cols:
-                    if col not in totals:
-                        totals[col] = ""
+                # سطر الإجمالي
+                totals = {'description': '--- TOTAL ---'}
+                for col in num_cols: totals[col] = df[col].sum()
+                for col in [c for c in required_cols if c not in num_cols and c != 'description']: totals[col] = ""
 
-                df_with_total = pd.concat([df, pd.DataFrame([totals])], ignore_index=True)
+                df_final = pd.concat([df, pd.DataFrame([totals])], ignore_index=True)
+                df_final = df_final[required_cols] # ترتيب الأعمدة
                 
-                # ترتيب الأعمدة لتظهر بشكل منظم
-                df_with_total = df_with_total[required_cols]
-
-                # إعداد الترقيم
-                new_index = list(range(1, len(df) + 1)) + ["TOTAL"]
-                df_with_total.index = new_index
-                df_with_total.index.name = "#"
-
+                # تنسيق الفهرس
+                df_final.index = list(range(1, len(df) + 1)) + ["TOTAL"]
+                
                 st.success(f"✅ تم استخراج {len(df)} صنف بنجاح!")
-                st.dataframe(df_with_total, use_container_width=True)
-                
+                st.dataframe(df_final, use_container_width=True)
+
                 # تصدير Excel
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df_with_total.to_excel(writer, index=True, sheet_name='Data')
-                
+                    df_final.to_excel(writer, index=True, sheet_name='Data')
                 st.download_button("📥 تحميل النتائج كملف Excel", output.getvalue(), f"Result_{uploaded_file.name}.xlsx")
             else:
-                st.warning("⚠️ لم يتم العثور على بيانات منظمة.")
+                st.error("❌ فشل النظام في فهم محتوى الملف. تأكد من وضوح البيانات.")
