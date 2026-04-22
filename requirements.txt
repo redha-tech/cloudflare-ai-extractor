@@ -2,3 +2,6 @@ streamlit>=1.30.0
 mistralai>=1.1.0
 pandas
 xlsxwriter
+pdf2image     # لتحويل صفحات PDF إلى صور
+Pillow        # لمعالجة الصور وتجهيزها لـ Mistral
+openpyxl      # لقراءة ملفات Excel الحديثة
