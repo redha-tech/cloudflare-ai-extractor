@@ -133,15 +133,43 @@ if uploaded_file:
                 if data and 'items' in data:
                     final_items = data['items']
 
-            # --- عرض النتائج المشتركة ---
+           # --- عرض النتائج المشتركة وتعديل الترقيم وإضافة الإجمالي ---
             if final_items:
                 df = pd.DataFrame(final_items)
-                st.success(f"✅ تم استخراج {len(df)} صنف بنجاح!")
-                st.dataframe(df, use_container_width=True)
+
+                # 1. تحويل الأعمدة الرقمية لضمان صحة الجمع (الكمية والمبلغ)
+                # نستخدم errors='coerce' لتحويل أي نص غريب إلى 0 بدلاً من تعليق البرنامج
+                df['qty'] = pd.to_numeric(df['qty'], errors='coerce').fillna(0)
+                df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
+
+                # 2. جعل الترقيم يبدأ من 1 بدلاً من 0
+                df.index = range(1, len(df) + 1)
+                df.index.name = "#"
+
+                # 3. إنشاء سطر الإجمالي (Total Row)
+                # سنقوم بإنشاء قاموس يحتوي على مجموع القيم
+                totals = {col: "" for col in df.columns} # جعل باقي الخانات فارغة
+                totals['description'] = "--- TOTAL / الإجمالي ---"
+                totals['qty'] = df['qty'].sum()
+                totals['amount'] = df['amount'].sum()
+
+                # تحويل السطر إلى DataFrame ودمجه
+                df_total_row = pd.DataFrame([totals])
+                df_display = pd.concat([df, df_total_row], ignore_index=True)
                 
+                # تحديث الفهرس ليظهر كلمة TOTAL في النهاية
+                new_index = list(range(1, len(df) + 1)) + ["TOTAL"]
+                df_display.index = new_index
+
+                st.success(f"✅ تم استخراج {len(df)} صنف بنجاح!")
+                
+                # عرض الجدول المحدث
+                st.dataframe(df_display, use_container_width=True)
+                
+                # 4. تجهيز ملف Excel للتحميل (يحتوي على الترقيم وسطر الإجمالي)
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df.to_excel(writer, index=False, sheet_name='ExtractedData')
+                    df_display.to_excel(writer, index=True, sheet_name='ExtractedData')
                 
                 st.download_button(
                     label="📥 تحميل النتائج كملف Excel",
@@ -151,6 +179,3 @@ if uploaded_file:
                 )
             else:
                 st.warning("⚠️ لم يتم العثور على بيانات منظمة.")
-
-st.markdown("---")
-st.caption("Clik-Plus Platform v3.5 - Optimized PDF Logic")
