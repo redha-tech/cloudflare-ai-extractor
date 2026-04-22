@@ -4,7 +4,7 @@ import json
 import base64
 import io
 from PIL import Image
-from pdf2image import convert_from_bytes
+import fitz  # PyMuPDF
 
 # --- 1. آلية الاستيراد المرنة ---
 try:
@@ -77,16 +77,23 @@ if uploaded_file:
         with st.spinner("جاري معالجة المستند..."):
             final_items = []
             
-            # حالة 1: ملف PDF
+            # حالة 1: ملف PDF (باستخدام PyMuPDF)
             if file_ext == 'pdf':
-                pdf_content = uploaded_file.getvalue() 
-                images = convert_from_bytes(pdf_content)
-                for i, img in enumerate(images):
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG")
-                    data = process_with_pixtral(buf.getvalue(), "image/jpeg")
+                pdf_content = uploaded_file.getvalue()
+                # فتح الملف من الذاكرة
+                doc = fitz.open(stream=pdf_content, filetype="pdf")
+                
+                for page_index in range(len(doc)):
+                    page = doc.load_page(page_index)
+                    # تحويل الصفحة لصورة بجودة عالية (Matrix 2.0 = 2x zoom)
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                    img_bytes = pix.tobytes("jpeg")
+                    
+                    # إرسال الصورة لـ Mistral
+                    data = process_with_pixtral(img_bytes, "image/jpeg")
                     if data and 'items' in data:
                         final_items.extend(data['items'])
+                doc.close()
             
             # حالة 2: ملف Excel
             elif file_ext in ['xlsx', 'xls']:
@@ -116,7 +123,7 @@ if uploaded_file:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             else:
-                st.warning("⚠️ لم يتم العثور على بيانات.")
+                st.warning("⚠️ لم يتم العثور على بيانات منظمة.")
 
 st.markdown("---")
-st.caption("Clik-Plus Platform v2.0 - Powered by Mistral Pixtral")
+st.caption("Clik-Plus Platform v3.0 - Powered by Mistral Pixtral & PyMuPDF")
