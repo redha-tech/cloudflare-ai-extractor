@@ -133,59 +133,60 @@ if uploaded_file:
                 if data and 'items' in data:
                     final_items = data['items']
 
-          # --- عرض النتائج المشتركة وتعديل الترقيم وإضافة الإجمالي مع تنسيق ---
+         # --- عرض النتائج المشتركة وتعديل الترقيم وإضافة الإجمالي مع تنسيق نظيف ---
             if final_items:
                 df = pd.DataFrame(final_items)
 
-                # 1. تنظيف البيانات الرقمية
+                # 1. تنظيف البيانات الرقمية للأصناف الأساسية
                 num_cols = ['qty', 'amount']
                 for col in num_cols:
                     if col in df.columns:
                         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-                # 2. جعل الترقيم يبدأ من 1
+                # 2. جعل الترقيم يبدأ من 1 للأصناف
                 df.index = range(1, len(df) + 1)
                 df.index.name = "#"
 
-                # 3. إضافة صفين فارغين قبل الإجمالي
-                empty_row = pd.Series([None] * len(df.columns), index=df.columns)
-                df_with_empty = pd.concat([df, empty_row.to_frame().T, empty_row.to_frame().T], ignore_index=True)
+                # 3. إنشاء الأسطر الفارغة (بدون None وبدون أرقام)
+                # نقوم بإنشاء DataFrame بأسطر فارغة تماماً ""
+                empty_data = {col: [""] * 2 for col in df.columns}
+                df_empty = pd.DataFrame(empty_data)
 
                 # 4. إنشاء سطر الإجمالي
                 totals = {col: "" for col in df.columns}
                 totals['description'] = "TOTAL / الإجمالي"
                 totals['qty'] = df['qty'].sum()
                 totals['amount'] = df['amount'].sum()
+                df_total = pd.DataFrame([totals])
 
-                # دمج سطر الإجمالي النهائي
-                df_final = pd.concat([df_with_empty, pd.DataFrame([totals])], ignore_index=True)
+                # 5. دمج الكل: الأصناف + السطرين الفارغين + الإجمالي
+                df_final = pd.concat([df.astype(object), df_empty, df_total], ignore_index=True)
 
-                # تحديث الفهرس (1, 2, 3... ثم فارغ، فارغ، ثم TOTAL)
+                # تحديث الفهرس ليظهر بشكل احترافي
                 new_index = list(range(1, len(df) + 1)) + [" ", "  ", "TOTAL"]
                 df_final.index = new_index
 
                 st.success(f"✅ تم استخراج {len(df)} صنف بنجاح!")
 
-                # 5. تلوين سطر الإجمالي (باللون الأصفر الفاتح للنص أو الخلفية)
+                # 6. تنسيق التلوين لسطر TOTAL فقط
                 def highlight_total(s):
                     return ['background-color: #ffffcc; font-weight: bold' if s.name == "TOTAL" else '' for _ in s]
 
                 styled_df = df_final.style.apply(highlight_total, axis=1)
                 
-                # عرض الجدول المنسق
+                # عرض الجدول في streamlit
                 st.dataframe(styled_df, use_container_width=True)
                 
-                # 6. تجهيز ملف Excel (مع الحفاظ على الفراغات والسطر الأخير)
+                # 7. تجهيز ملف Excel المحمل
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df_final.to_excel(writer, index=True, sheet_name='ExtractedData')
                     
-                    # تلوين الإجمالي في ملف Excel المحمل أيضاً
                     workbook = writer.book
                     worksheet = writer.sheets['ExtractedData']
-                    header_format = workbook.add_format({'bg_color': '#ffffcc', 'bold': True, 'border': 1})
-                    # تلوين السطر الأخير (TOTAL)
-                    worksheet.set_row(len(df_final), None, header_format)
+                    # تنسيق السطر الأخير في إكسل
+                    total_format = workbook.add_format({'bg_color': '#ffffcc', 'bold': True, 'border': 1})
+                    worksheet.set_row(len(df_final), None, total_format)
                 
                 st.download_button(
                     label="📥 تحميل النتائج كملف Excel",
