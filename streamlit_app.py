@@ -5,21 +5,14 @@ import base64
 import io
 import fitz  # PyMuPDF
 
-# --- 1. آلية الاستيراد المرنة ---
+# --- 1. آلية الاستيراد ---
 try:
     from mistralai import Mistral
 except ImportError:
     from mistralai.client import Mistral
 
-# --- 2. إعدادات الصفحة والواجهة ---
+# --- 2. إعدادات الصفحة ---
 st.set_page_config(page_title="Clik-Plus | Smart OCR", layout="wide", page_icon="🚢")
-
-st.markdown("""
-    <style>
-    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #FF4B4B; color: white; }
-    .stDataFrame { border: 1px solid #e6e9ef; border-radius: 5px; }
-    </style>
-    """, unsafe_allow_html=True)
 
 MISTRAL_KEY = st.secrets.get("MISTRAL_API_KEY")
 
@@ -33,12 +26,9 @@ def process_with_pixtral(file_bytes, mime_type):
         actual_mime = mime_type if "pdf" not in mime_type else "image/jpeg"
         data_url = f"data:{actual_mime};base64,{base64_file}"
 
-        # تحديث الـ Prompt ليشمل الوزن (Weight)
         prompt = (
             "Extract items into JSON with these keys: "
             "hs_code, description, qty, unit_price, amount, origin, weight. "
-            "If weight is not mentioned, return null. "
-            "Important: Keep Arabic text for description and origin. "
             "Return ONLY a JSON object with a single key 'items'."
         )
 
@@ -52,7 +42,7 @@ def process_with_pixtral(file_bytes, mime_type):
         )
         return json.loads(response.choices[0].message.content)
     except Exception as e:
-        st.error(f"Vision Error: {str(e)}")
+        st.error(f"Error: {str(e)}")
         return None
 
 def process_pdf_text(text_content):
@@ -60,10 +50,8 @@ def process_pdf_text(text_content):
     try:
         client = Mistral(api_key=MISTRAL_KEY)
         prompt = (
-            "Extract items from the text into JSON: "
-            "hs_code, description, qty, unit_price, amount, origin, weight. "
-            "Keep Arabic text. Return ONLY JSON with key 'items'.\n\n"
-            f"Text content:\n{text_content}"
+            "Extract items from the text into JSON: hs_code, description, qty, unit_price, amount, origin, weight. "
+            f"Keep Arabic. Return ONLY JSON with key 'items'.\n\nText:\n{text_content}"
         )
         response = client.chat.complete(
             model="mistral-small-latest",
@@ -84,7 +72,7 @@ if uploaded_file:
     file_ext = uploaded_file.name.split('.')[-1].lower()
     
     if st.button("🚀 تحليل واستخراج البيانات الآن"):
-        with st.spinner("جاري تحليل البيانات وفحص القيم..."):
+        with st.spinner("جاري معالجة المستند..."):
             final_items = []
 
             if file_ext == 'pdf':
@@ -92,7 +80,6 @@ if uploaded_file:
                 doc = fitz.open(stream=pdf_content, filetype="pdf")
                 full_text = "".join([page.get_text() for page in doc])
                 doc.close()
-                
                 if full_text.strip():
                     data = process_pdf_text(full_text)
                     if data and 'items' in data: final_items = data['items']
@@ -103,50 +90,47 @@ if uploaded_file:
                         data = process_with_pixtral(pix.tobytes("jpeg"), "image/jpeg")
                         if data and 'items' in data: final_items.extend(data['items'])
                     doc.close()
-
             elif file_ext in ['xlsx', 'xls']:
                 df_excel = pd.read_excel(uploaded_file)
                 final_items = df_excel.to_dict(orient='records')
-
             else:
                 data = process_with_pixtral(uploaded_file.getvalue(), uploaded_file.type)
                 if data and 'items' in data: final_items = data['items']
 
-            # --- معالجة وتنبيهات البيانات ---
             if final_items:
                 df = pd.DataFrame(final_items)
-                
-                # 1. جعل الترقيم يبدأ من 1
                 df.index = df.index + 1
                 df.index.name = "#"
 
-                # 2. التحقق من القيم الصفرية أو الخصومات
-                zero_val_items = []
-                for idx, row in df.iterrows():
-                    # التحقق من السعر أو المجموع (Amount)
-                    try:
-                        price = float(row.get('unit_price', 0))
-                        amount = float(row.get('amount', 0))
-                        desc = row.get('description', f'Item {idx}')
-                        
-                        if price <= 0 or amount <= 0:
-                            zero_val_items.append(f"الصنف #{idx}: {desc}")
-                    except:
-                        continue
+                # تحويل الأعمدة الرقمية لضمان دقة الحساب
+                df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
+                df['unit_price'] = pd.to_numeric(df['unit_price'], errors='coerce').fillna(0)
 
-                if zero_val_items:
-                    st.warning("⚠️ تنبيه: تم العثور على أصناف بقيمة صفرية أو خصم:")
-                    for item in zero_val_items:
-                        st.write(f"- {item}")
+                # --- 1. تنبيهات القيم الصفرية في سطر واحد ---
+                zero_items = df[df['amount'] <= 0].index.tolist()
+                if zero_items:
+                    items_str = ", ".join([f"#{i}" for i in zero_items])
+                    st.warning(f"⚠️ تنبيه: تم العثور على قيم صفرية أو خصومات في الأصناف التالية: {items_str}")
 
+                # --- 2. إضافة صف الإجمالي (Total) في النهاية ---
+                total_amount = df['amount'].sum()
+                
                 # عرض النتائج
                 st.success(f"✅ تم استخراج {len(df)} صنف بنجاح!")
                 st.dataframe(df, use_container_width=True)
                 
-                # تحميل Excel
+                # عرض الإجمالي بشكل واضح
+                st.info(f"💰 **إجمالي المبلغ الكلي (Total Amount): {total_amount:,.2f}**")
+                
+                # تحميل Excel مع صف الإجمالي
+                df_with_total = df.copy()
+                # إضافة صف الإجمالي في نهاية الـ DataFrame للأكسل
+                df_with_total.loc['Total'] = None
+                df_with_total.at['Total', 'amount'] = total_amount
+                
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df.to_excel(writer, index=True, sheet_name='Data')
+                    df_with_total.to_excel(writer, index=True)
                 
                 st.download_button(
                     label="📥 تحميل النتائج كملف Excel",
@@ -154,4 +138,4 @@ if uploaded_file:
                     file_name=f"Extracted_{uploaded_file.name}.xlsx"
                 )
             else:
-                st.warning("⚠️ لم يتم العثور على بيانات منظمة.")
+                st.warning("⚠️ لم يتم العثور على بيانات.")
