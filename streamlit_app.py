@@ -133,43 +133,59 @@ if uploaded_file:
                 if data and 'items' in data:
                     final_items = data['items']
 
-           # --- عرض النتائج المشتركة وتعديل الترقيم وإضافة الإجمالي ---
+          # --- عرض النتائج المشتركة وتعديل الترقيم وإضافة الإجمالي مع تنسيق ---
             if final_items:
                 df = pd.DataFrame(final_items)
 
-                # 1. تحويل الأعمدة الرقمية لضمان صحة الجمع (الكمية والمبلغ)
-                # نستخدم errors='coerce' لتحويل أي نص غريب إلى 0 بدلاً من تعليق البرنامج
-                df['qty'] = pd.to_numeric(df['qty'], errors='coerce').fillna(0)
-                df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
+                # 1. تنظيف البيانات الرقمية
+                num_cols = ['qty', 'amount']
+                for col in num_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-                # 2. جعل الترقيم يبدأ من 1 بدلاً من 0
+                # 2. جعل الترقيم يبدأ من 1
                 df.index = range(1, len(df) + 1)
                 df.index.name = "#"
 
-                # 3. إنشاء سطر الإجمالي (Total Row)
-                # سنقوم بإنشاء قاموس يحتوي على مجموع القيم
-                totals = {col: "" for col in df.columns} # جعل باقي الخانات فارغة
-                totals['description'] = "--- TOTAL / الإجمالي ---"
+                # 3. إضافة صفين فارغين قبل الإجمالي
+                empty_row = pd.Series([None] * len(df.columns), index=df.columns)
+                df_with_empty = pd.concat([df, empty_row.to_frame().T, empty_row.to_frame().T], ignore_index=True)
+
+                # 4. إنشاء سطر الإجمالي
+                totals = {col: "" for col in df.columns}
+                totals['description'] = "TOTAL / الإجمالي"
                 totals['qty'] = df['qty'].sum()
                 totals['amount'] = df['amount'].sum()
 
-                # تحويل السطر إلى DataFrame ودمجه
-                df_total_row = pd.DataFrame([totals])
-                df_display = pd.concat([df, df_total_row], ignore_index=True)
-                
-                # تحديث الفهرس ليظهر كلمة TOTAL في النهاية
-                new_index = list(range(1, len(df) + 1)) + ["TOTAL"]
-                df_display.index = new_index
+                # دمج سطر الإجمالي النهائي
+                df_final = pd.concat([df_with_empty, pd.DataFrame([totals])], ignore_index=True)
+
+                # تحديث الفهرس (1, 2, 3... ثم فارغ، فارغ، ثم TOTAL)
+                new_index = list(range(1, len(df) + 1)) + [" ", "  ", "TOTAL"]
+                df_final.index = new_index
 
                 st.success(f"✅ تم استخراج {len(df)} صنف بنجاح!")
+
+                # 5. تلوين سطر الإجمالي (باللون الأصفر الفاتح للنص أو الخلفية)
+                def highlight_total(s):
+                    return ['background-color: #ffffcc; font-weight: bold' if s.name == "TOTAL" else '' for _ in s]
+
+                styled_df = df_final.style.apply(highlight_total, axis=1)
                 
-                # عرض الجدول المحدث
-                st.dataframe(df_display, use_container_width=True)
+                # عرض الجدول المنسق
+                st.dataframe(styled_df, use_container_width=True)
                 
-                # 4. تجهيز ملف Excel للتحميل (يحتوي على الترقيم وسطر الإجمالي)
+                # 6. تجهيز ملف Excel (مع الحفاظ على الفراغات والسطر الأخير)
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df_display.to_excel(writer, index=True, sheet_name='ExtractedData')
+                    df_final.to_excel(writer, index=True, sheet_name='ExtractedData')
+                    
+                    # تلوين الإجمالي في ملف Excel المحمل أيضاً
+                    workbook = writer.book
+                    worksheet = writer.sheets['ExtractedData']
+                    header_format = workbook.add_format({'bg_color': '#ffffcc', 'bold': True, 'border': 1})
+                    # تلوين السطر الأخير (TOTAL)
+                    worksheet.set_row(len(df_final), None, header_format)
                 
                 st.download_button(
                     label="📥 تحميل النتائج كملف Excel",
