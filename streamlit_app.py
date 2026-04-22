@@ -82,8 +82,10 @@ if uploaded_file:
             final_items = []
             
             # حالة 1: ملف PDF (تحويل كل صفحة لصورة ومعالجتها)
-            if file_ext == 'pdf':
-                images = convert_from_bytes(uploaded_file.read())
+           if file_ext == 'pdf':
+    # قراءة محتوى الملف مرة واحدة في متغير
+    pdf_content = uploaded_file.getvalue() 
+    images = convert_from_bytes(pdf_content)
                 for i, img in enumerate(images):
                     buf = io.BytesIO()
                     img.save(buf, format="JPEG")
