@@ -27,7 +27,27 @@ st.markdown("""
 
 MISTRAL_KEY = st.secrets.get("MISTRAL_API_KEY")
 
-# --- 3. دالات المعالجة ---
+# --- 3. دالات المعالجة الذكية ---
+
+def get_smart_prompt(context_type="image", text_content=None):
+    """دالة لإنشاء برومبت ذكي يركز على المنطق والسياق"""
+    base_prompt = (
+        "You are a Senior Customs & Logistics Specialist. Analyze the provided document logically:\n"
+        "1. **Identify the Main Table**: Locate where the items are listed.\n"
+        "2. **HS Code Logic**: Look for numbers with 6, 8, or 10 digits. \n"
+        "   - CRITICAL: If a number is 13 digits or starts with common barcode prefixes (like 629), IGNORE IT as an HS code.\n"
+        "   - SEARCH: Look near the description or under headers like 'Tariff', 'Commodity Code', 'بند', 'تنسيق'.\n"
+        "3. **Amount Logic**: Ensure (Quantity * Unit Price = Amount). If the document says 'Total', verify it logically.\n"
+        "4. **Origin Logic**: Find country names or ISO codes. If mentioned in the item line, capture it.\n"
+        "5. **Extraction**: Keep values EXACTLY as written. No translation. If missing, return \"\".\n"
+        "Return ONLY a valid JSON object: {\"items\": [{"
+        "\"hs_code\": \"\", \"description\": \"\", \"qty\": \"\", \"unit_price\": \"\", \"amount\": \"\", \"origin\": \"\""
+        "}]}"
+    )
+    if context_type == "text":
+        return f"{base_prompt}\n\nDocument Text Content:\n{text_content}"
+    return base_prompt
+
 def process_with_pixtral(file_bytes, mime_type):
     if not MISTRAL_KEY:
         st.error("⚠️ مفتاح API مفقود!")
@@ -37,24 +57,12 @@ def process_with_pixtral(file_bytes, mime_type):
         base64_file = base64.b64encode(file_bytes).decode('utf-8')
         data_url = f"data:{mime_type};base64,{base64_file}"
 
-       prompt = (
-    "You are a Senior Customs Specialist. Analyze the provided invoice logically: "
-    "\n1. Identify the Main Table: Locate the area containing item descriptions. "
-    "\n2. HS Code Identification: Look for a sequence of 6, 8, or 10 digits. "
-    "   - Logic: If a number is 13 digits or more, it is likely a BARCODE; IGNORE IT. "
-    "   - Logic: The HS Code is usually found in a column labeled 'HS', 'Code', 'Commodity', or 'Tariff'. "
-    "\n3. Amounts & Totals: Identify the 'Line Total'. Verify that (Quantity * Unit Price = Amount). "
-    "\n4. Origin: Look for country names (e.g., China, USA, Italy) or codes (CN, US, IT). "
-    "\n5. Extraction: Keep the text EXACTLY as written. No translation. "
-    "\nReturn ONLY a JSON object with 'items' containing the list."
-)
-
         response = client.chat.complete(
             model="pixtral-12b-2409",
             messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": prompt},
+                    {"type": "text", "text": get_smart_prompt()},
                     {"type": "image_url", "image_url": data_url}
                 ]
             }],
@@ -69,16 +77,9 @@ def process_pdf_text(text_content):
     if not MISTRAL_KEY: return None
     try:
         client = Mistral(api_key=MISTRAL_KEY)
-        prompt = (
-            "Extract items from the following text into JSON format with these exact keys: "
-            "hs_code, description, qty, unit_price, amount, origin. "
-            "Important: Extract all values EXACTLY as they are written. Do not translate. "
-            "Return ONLY a valid JSON object with a single key 'items'.\n\n"
-            f"Text content:\n{text_content}"
-        )
         response = client.chat.complete(
             model="mistral-small-latest",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": get_smart_prompt("text", text_content)}],
             response_format={"type": "json_object"}
         )
         return json.loads(response.choices[0].message.content)
@@ -87,7 +88,7 @@ def process_pdf_text(text_content):
         return None
 
 # --- 4. واجهة المستخدم الرسومية ---
-st.title("🚢 Clik-Plus | المستخرج الذكي")
+st.title("🚢 Clik-Plus | المستخرج الذكي (Smart OCR)")
 
 uploaded_file = st.file_uploader("ارفع الملف (PDF, Excel, PNG, JPG)", type=['png', 'jpg', 'jpeg', 'pdf', 'xlsx', 'xls'])
 
@@ -95,7 +96,7 @@ if uploaded_file:
     file_ext = uploaded_file.name.split('.')[-1].lower()
     
     if st.button("🚀 تحليل واستخراج البيانات الآن"):
-        with st.spinner("جاري معالجة المستند..."):
+        with st.spinner("جاري معالجة المستند منطقياً..."):
             final_items = []
 
             if file_ext == 'pdf':
@@ -119,13 +120,14 @@ if uploaded_file:
                 df_raw = pd.read_excel(uploaded_file)
                 df_raw.columns = [str(c).strip() for c in df_raw.columns]
                 
+                # خريطة ذكية للمرادفات (Bilingual Smart Map)
                 smart_map = {
-                    'hs_code': ['hs', 'code', 'رمز', 'تنسيق'],
-                    'description': ['desc', 'item', 'product', 'البيان', 'الصنف', 'الوصف'],
-                    'qty': ['qnt', 'quantity', 'الكمية', 'عدد'],
-                    'unit_price': ['rate', 'price', 'سعر', 'فئة'],
-                    'amount': ['total', 'value', 'المبلغ', 'القيمة'],
-                    'origin': ['country', 'made', 'المنشأ', 'بلد']
+                    'hs_code': ['hs', 'code', 'commodity', 'tariff', 'بند', 'رمز', 'تنسيق'],
+                    'description': ['desc', 'item', 'product', 'البيان', 'الصنف', 'الوصف', 'الاسم'],
+                    'qty': ['qnt', 'quantity', 'الكمية', 'عدد', 'pcs'],
+                    'unit_price': ['rate', 'price', 'سعر', 'فئة', 'unit'],
+                    'amount': ['total', 'value', 'amount', 'المبلغ', 'القيمة'],
+                    'origin': ['country', 'made', 'origin', 'المنشأ', 'بلد', 'مصدر']
                 }
                 
                 new_cols = {}
@@ -146,34 +148,31 @@ if uploaded_file:
                 data = process_with_pixtral(uploaded_file.getvalue(), uploaded_file.type)
                 if data and 'items' in data: final_items = data['items']
 
-            # --- عرض النتائج المشتركة ---
+            # --- عرض النتائج المشتركة وتنسيقها ---
             if final_items:
                 df = pd.DataFrame(final_items)
                 
-                # 1. Clean numbers
+                # تنظيف الأرقام
                 for col in ['qty', 'amount']:
                     if col in df.columns:
                         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-                # 2. Add 2 empty rows
+                # إضافة الصفوف الفارغة والإجمالي
                 empty_data = {col: [""] * 2 for col in df.columns}
                 df_empty = pd.DataFrame(empty_data)
 
-                # 3. Add Total Row
                 totals = {col: "" for col in df.columns}
                 totals['description'] = "TOTAL / الإجمالي"
                 totals['qty'] = df['qty'].sum()
                 totals['amount'] = df['amount'].sum()
                 df_total = pd.DataFrame([totals])
 
-                # 4. Merge
                 df_final = pd.concat([df.astype(object), df_empty, df_total], ignore_index=True)
                 
-                # 5. Index starting from 1
                 new_idx = list(range(1, len(df) + 1)) + [" ", "  ", "TOTAL"]
                 df_final.index = new_idx
 
-                st.success(f"✅ تم استخراج {len(df)} صنف بنجاح!")
+                st.success(f"✅ تم تحليل {len(df)} صنف بذكاء!")
                 
                 def highlight(s):
                     return ['background-color: #ffffcc; font-weight: bold' if s.name == "TOTAL" else '' for _ in s]
@@ -184,9 +183,9 @@ if uploaded_file:
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df_final.to_excel(writer, index=True, sheet_name='ExtractedData')
                     worksheet = writer.sheets['ExtractedData']
-                    total_fmt = writer.book.add_format({'bg_color': '#ffffcc', 'bold': True})
+                    total_fmt = writer.book.add_format({'bg_color': '#ffffcc', 'bold': True, 'border': 1})
                     worksheet.set_row(len(df_final), None, total_fmt)
                 
                 st.download_button("📥 تحميل النتائج كملف Excel", output.getvalue(), f"Extracted_{uploaded_file.name}.xlsx")
             else:
-                st.warning("⚠️ لم يتم العثور على بيانات منظمة.")
+                st.warning("⚠️ لم يتم العثور على بيانات، يرجى التأكد من جودة المستند.")
