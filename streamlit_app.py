@@ -23,12 +23,11 @@ st.markdown("""
 
 MISTRAL_KEY = st.secrets.get("MISTRAL_API_KEY")
 
-# --- 3. التعليمات الذكية للنموذج ---
+# --- 3. التعليمات الذكية (Prompt) ---
 MASTER_PROMPT = (
-    "Analyze the invoice and extract items into JSON. Map different column names to these exact keys: "
-    "hs_code, description (keep Arabic), qty, unit_price, amount, origin (keep Arabic), "
-    "gross_weight, net_weight, pkg, invoice_number. "
-    "If a value is missing, use null. Return ONLY a JSON object with key 'items'."
+    "Extract invoice items into JSON with these EXACT keys: "
+    "hs_code, description, qty, unit_price, amount, origin, gross_weight, net_weight, pkg, invoice_number. "
+    "If any field is missing, return null for it. Keep Arabic text. Return ONLY JSON with key 'items'."
 )
 
 # --- 4. الدوال البرمجية ---
@@ -78,7 +77,7 @@ if uploaded_file:
     file_ext = uploaded_file.name.split('.')[-1].lower()
     
     if st.button("🚀 تحليل واستخراج البيانات الآن"):
-        with st.spinner("جاري تحليل البيانات وفحص القيم..."):
+        with st.spinner("جاري تحليل البيانات..."):
             final_items = []
 
             if file_ext == 'pdf':
@@ -98,8 +97,8 @@ if uploaded_file:
                     doc.close()
 
             elif file_ext in ['xlsx', 'xls']:
-                df_excel = pd.read_excel(uploaded_file).ffill()
-                final_items = df_excel.to_dict(orient='records')
+                df_raw = pd.read_excel(uploaded_file).ffill()
+                final_items = df_raw.to_dict(orient='records')
 
             else:
                 data = process_with_pixtral(uploaded_file.getvalue(), uploaded_file.type)
@@ -108,31 +107,44 @@ if uploaded_file:
             if final_items:
                 df = pd.DataFrame(final_items)
                 
-                # تنظيف البيانات الرقمية
-                num_cols = ['qty', 'unit_price', 'amount', 'gross_weight', 'net_weight']
-                for col in num_cols:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                # قائمة الأعمدة الإلزامية التي يجب أن تظهر في الجدول
+                required_cols = ['hs_code', 'description', 'qty', 'unit_price', 'amount', 'origin', 'gross_weight', 'net_weight', 'pkg', 'invoice_number']
+                
+                # التأكد من وجود كل عمود، وإذا لم يوجد ننشئه فارغاً
+                for col in required_cols:
+                    if col not in df.columns:
+                        df[col] = "" # أو 0 للأعمدة الرقمية
+
+                # تنظيف الأعمدة الرقمية للجمع (فقط إذا كانت موجودة وبها بيانات)
+                numeric_cols = ['qty', 'unit_price', 'amount', 'gross_weight', 'net_weight']
+                for col in numeric_cols:
+                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
                 # تنبيه الخصومات والقيم الصفرية في سطر واحد
+                # نتجنب الخطأ بالتحقق من وجود القيم قبل الفحص
                 zero_indices = df[(df['unit_price'] <= 0) | (df['amount'] <= 0)].index.tolist()
                 if zero_indices:
-                    short_list = ", ".join([f"#{i+1}" for i in zero_indices])
-                    st.warning(f"⚠️ تنبيه: تم العثور على قيم صفرية أو خصومات في الأسطر: {short_list}")
+                    st.warning(f"⚠️ تنبيه: قيم صفرية أو خصومات في الأسطر: {', '.join([f'#{i+1}' for i in zero_indices])}")
 
                 # --- إضافة سطر TOTAL الديناميكي ---
                 totals = {
                     'description': '--- TOTAL ---',
                     'qty': df['qty'].sum(),
                     'amount': df['amount'].sum(),
-                    'gross_weight': df['gross_weight'].sum() if 'gross_weight' in df.columns else 0,
-                    'net_weight': df['net_weight'].sum() if 'net_weight' in df.columns else 0
+                    'gross_weight': df['gross_weight'].sum(),
+                    'net_weight': df['net_weight'].sum()
                 }
-                
-                # دمج سطر المجموع
+                # باقي الأعمدة في سطر التوتال تكون فارغة
+                for col in required_cols:
+                    if col not in totals:
+                        totals[col] = ""
+
                 df_with_total = pd.concat([df, pd.DataFrame([totals])], ignore_index=True)
                 
-                # إعداد الترقيم: 1، 2، 3... ثم TOTAL
+                # ترتيب الأعمدة لتظهر بشكل منظم
+                df_with_total = df_with_total[required_cols]
+
+                # إعداد الترقيم
                 new_index = list(range(1, len(df) + 1)) + ["TOTAL"]
                 df_with_total.index = new_index
                 df_with_total.index.name = "#"
@@ -140,15 +152,11 @@ if uploaded_file:
                 st.success(f"✅ تم استخراج {len(df)} صنف بنجاح!")
                 st.dataframe(df_with_total, use_container_width=True)
                 
-                # تحميل Excel
+                # تصدير Excel
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df_with_total.to_excel(writer, index=True, sheet_name='ExtractedData')
+                    df_with_total.to_excel(writer, index=True, sheet_name='Data')
                 
-                st.download_button(
-                    label="📥 تحميل النتائج كملف Excel",
-                    data=output.getvalue(),
-                    file_name=f"Extracted_{uploaded_file.name}.xlsx"
-                )
+                st.download_button("📥 تحميل النتائج كملف Excel", output.getvalue(), f"Result_{uploaded_file.name}.xlsx")
             else:
                 st.warning("⚠️ لم يتم العثور على بيانات منظمة.")
