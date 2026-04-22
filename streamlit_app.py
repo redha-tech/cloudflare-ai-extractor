@@ -34,10 +34,8 @@ def process_with_pixtral(file_bytes, mime_type):
         data_url = f"data:{actual_mime};base64,{base64_file}"
 
         prompt = (
-            "Extract items into JSON with these keys: "
+            "Extract items into JSON with these exact keys: "
             "hs_code, description, qty, unit_price, amount, origin, weight. "
-            "If weight is not mentioned, return null. "
-            "Important: Keep Arabic text for description and origin. "
             "Return ONLY a JSON object with a single key 'items'."
         )
 
@@ -111,21 +109,26 @@ if uploaded_file:
                 data = process_with_pixtral(uploaded_file.getvalue(), uploaded_file.type)
                 if data and 'items' in data: final_items = data['items']
 
-            # --- معالجة وتنبيهات البيانات ---
+            # --- معالجة البيانات وتفادي الأخطاء ---
             if final_items:
                 df = pd.DataFrame(final_items)
                 
+                # التأكد من وجود الأعمدة المطلوبة لتفادي KeyError
+                required_cols = ['hs_code', 'description', 'qty', 'unit_price', 'amount', 'origin', 'weight']
+                for col in required_cols:
+                    if col not in df.columns:
+                        df[col] = 0 if col in ['qty', 'unit_price', 'amount', 'weight'] else ""
+
                 # جعل الترقيم يبدأ من 1
                 df.index = df.index + 1
                 df.index.name = "#"
 
-                # تحويل الأعمدة الرقمية لضمان الحساب الصحيح
+                # تحويل الأعمدة الرقمية بأمان
                 df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
                 df['unit_price'] = pd.to_numeric(df['unit_price'], errors='coerce').fillna(0)
 
-                # التحقق من القيم الصفرية أو الخصومات (عرض في سطر واحد)
+                # التحقق من القيم الصفرية (عرض في سطر واحد)
                 zero_val_indices = df[(df['unit_price'] <= 0) | (df['amount'] <= 0)].index.tolist()
-                
                 if zero_val_indices:
                     indices_str = ", ".join([f"#{i}" for i in zero_val_indices])
                     st.warning(f"⚠️ تنبيه: تم العثور على قيم صفرية أو خصم في الأصناف التالية: {indices_str}")
@@ -137,10 +140,9 @@ if uploaded_file:
                 st.success(f"✅ تم استخراج {len(df)} صنف بنجاح!")
                 st.dataframe(df, use_container_width=True)
                 
-                # عرض الإجمالي في الواجهة
                 st.info(f"📊 **إجمالي المبلغ الكلي (Total Amount): {total_sum:,.2f}**")
                 
-                # إعداد نسخة Excel مع سطر الإجمالي
+                # إعداد نسخة Excel
                 df_export = df.copy()
                 df_export.loc['Total'] = None
                 df_export.at['Total', 'amount'] = total_sum
