@@ -37,7 +37,7 @@ def process_with_pixtral(file_bytes, mime_type):
         base64_file = base64.b64encode(file_bytes).decode('utf-8')
         data_url = f"data:{mime_type};base64,{base64_file}"
 
-       prompt = (
+      prompt = (
     "Extract all items into JSON format with these exact keys: "
     "hs_code, description, qty, unit_price, amount, origin. "
     "Important: Extract all values EXACTLY as they are written in the document. "
