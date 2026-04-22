@@ -12,7 +12,7 @@ except ImportError:
     try:
         from mistralai.client import Mistral
     except ImportError:
-        st.error("❌ المكتبة غير مثبتة. يرجى إعادة تشغيل التطبيق.")
+        st.error("❌ السيرفر لا يزال لا يرى مكتبة Mistral. يرجى الضغط على Manage App ثم Reboot App.")
         st.stop()
 
 # --- 2. إعدادات الصفحة والواجهة ---
@@ -27,26 +27,7 @@ st.markdown("""
 
 MISTRAL_KEY = st.secrets.get("MISTRAL_API_KEY")
 
-# --- 3. دالات المعالجة الذكية ---
-
-def get_smart_prompt(context_type="image", text_content=None):
-    base_prompt = (
-        "You are an AI Data Scientist specialized in Global Trade Documents. "
-        "Your goal is to find the 'Logic' of the invoice, regardless of its layout:\n"
-        "1. **Semantic Mapping**: Identify columns by content:\n"
-        "   - **HS_CODE**: Look for 6, 8, or 10 digits. Ignore 13-digit barcodes.\n"
-        "   - **DESCRIPTION**: The main text field in the row.\n"
-        "   - **QTY**: Integers near description.\n"
-        "   - **PRICE**: Decimal numbers.\n"
-        "   - **ORIGIN**: Country names or 'C/O'.\n"
-        "2. **Table Reconstruction**: Capture every single item row. Do not skip.\n"
-        "3. **Zero Translation**: Extract text EXACTLY as written.\n"
-        "4. **Strict JSON**: Return ONLY a valid JSON object with key 'items'."
-    )
-    if context_type == "text":
-        return f"{base_prompt}\n\nInvoice Content:\n{text_content}"
-    return base_prompt
-
+# --- 3. دالة معالجة البيانات (للصور فقط) ---
 def process_with_pixtral(file_bytes, mime_type):
     if not MISTRAL_KEY:
         st.error("⚠️ مفتاح API مفقود!")
@@ -55,119 +36,121 @@ def process_with_pixtral(file_bytes, mime_type):
         client = Mistral(api_key=MISTRAL_KEY)
         base64_file = base64.b64encode(file_bytes).decode('utf-8')
         data_url = f"data:{mime_type};base64,{base64_file}"
+
+        prompt = (
+            "Extract all items into JSON format with these exact keys: "
+            "hs_code, description, qty, unit_price, amount, origin. "
+            "Important: Keep Arabic text for description and origin. "
+            "Return ONLY a valid JSON object with a single key 'items' containing the list."
+        )
+
         response = client.chat.complete(
             model="pixtral-12b-2409",
-            messages=[{"role": "user", "content": [{"type": "text", "text": get_smart_prompt()}, {"type": "image_url", "image_url": data_url}]}],
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": data_url}
+                ]
+            }],
             response_format={"type": "json_object"}
         )
         return json.loads(response.choices[0].message.content)
     except Exception as e:
-        st.error(f"❌ خطأ في محرك الصور: {str(e)}")
+        st.error(f"❌ فشل الاتصال بمحرك Pixtral: {str(e)}")
         return None
 
+# --- دالة معالجة النصوص المستخرجة من الـ PDF ---
 def process_pdf_text(text_content):
     if not MISTRAL_KEY: return None
     try:
         client = Mistral(api_key=MISTRAL_KEY)
+        prompt = (
+            "Extract items from the following text into JSON format with these exact keys: "
+            "hs_code, description, qty, unit_price, amount, origin. "
+            "Keep Arabic text for description and origin. "
+            "Return ONLY a valid JSON object with a single key 'items'.\n\n"
+            f"Text content:\n{text_content}"
+        )
         response = client.chat.complete(
-            model="mistral-small-latest",
-            messages=[{"role": "user", "content": get_smart_prompt("text", text_content)}],
+            model="mistral-small-latest", # موديل نصي سريع ودقيق
+            messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )
         return json.loads(response.choices[0].message.content)
     except Exception as e:
-        st.error(f"❌ خطأ في تحليل النص: {str(e)}")
+        st.error(f"❌ خطأ في تحليل نص PDF: {str(e)}")
         return None
 
-# --- 4. واجهة المستخدم الرئيسية ---
+# --- 4. واجهة المستخدم الرسومية ---
 st.title("🚢 Clik-Plus | المستخرج الذكي")
+st.markdown("تحليل الفواتير والمستندات باستخدام محرك **Mistral AI**.")
 
-uploaded_file = st.file_uploader("ارفع الملف (PDF, Excel, Images)", type=['png', 'jpg', 'jpeg', 'pdf', 'xlsx', 'xls'])
+uploaded_file = st.file_uploader("ارفع الملف (PDF, Excel, PNG, JPG)", type=['png', 'jpg', 'jpeg', 'pdf', 'xlsx', 'xls'])
 
 if uploaded_file:
     file_ext = uploaded_file.name.split('.')[-1].lower()
     
     if st.button("🚀 تحليل واستخراج البيانات الآن"):
-        with st.spinner("جاري تحليل المستند بذكاء..."):
+        with st.spinner("جاري معالجة المستند..."):
             final_items = []
 
-            # معالجة PDF
+            # --- التعديل هنا: منطق الـ PDF الجديد ---
             if file_ext == 'pdf':
                 pdf_content = uploaded_file.getvalue()
                 doc = fitz.open(stream=pdf_content, filetype="pdf")
-                full_text = "".join([page.get_text() for page in doc])
+                
+                # استخراج كافة النصوص من الصفحات
+                full_text = ""
+                for page in doc:
+                    full_text += page.get_text()
                 doc.close()
+                
                 if full_text.strip():
+                    # معالجة النص مباشرة (للملفات القابلة للقراءة)
                     data = process_pdf_text(full_text)
-                    if data and 'items' in data: final_items = data['items']
+                    if data and 'items' in data:
+                        final_items = data['items']
                 else:
+                    st.warning("⚠️ لم يتم العثور على نص رقمي في الـ PDF، جاري محاولة تحليله كصور...")
+                    # كخطة احتياطية إذا كان الـ PDF عبارة عن صور (Scanner)
                     doc = fitz.open(stream=pdf_content, filetype="pdf")
                     for page in doc:
                         pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
                         data = process_with_pixtral(pix.tobytes("jpeg"), "image/jpeg")
-                        if data and 'items' in data: final_items.extend(data['items'])
+                        if data and 'items' in data:
+                            final_items.extend(data['items'])
                     doc.close()
 
-            # معالجة Excel
+            # الحالة 2: ملفات Excel (بدون تغيير)
             elif file_ext in ['xlsx', 'xls']:
-                df_raw = pd.read_excel(uploaded_file)
-                df_raw.columns = [str(c).strip() for c in df_raw.columns]
-                smart_map = {
-                    'hs_code': ['hs', 'code', 'commodity', 'tariff', 'بند', 'رمز'],
-                    'description': ['desc', 'item', 'product', 'البيان', 'الوصف'],
-                    'qty': ['qty', 'quantity', 'الكمية', 'عدد'],
-                    'unit_price': ['price', 'rate', 'سعر', 'فئة'],
-                    'amount': ['amount', 'total', 'المبلغ', 'القيمة'],
-                    'origin': ['origin', 'c/o', 'made', 'المنشأ', 'بلد']
-                }
-                new_cols = {}
-                for official, synonyms in smart_map.items():
-                    for actual in df_raw.columns:
-                        if any(syn.lower() in actual.lower() for syn in synonyms):
-                            new_cols[actual] = official
-                            break
-                df_raw = df_raw.rename(columns=new_cols)
-                required = ['hs_code', 'description', 'qty', 'unit_price', 'amount', 'origin']
-                for col in required:
-                    if col not in df_raw.columns: df_raw[col] = ""
-                final_items = df_raw[required].to_dict(orient='records')
+                df_excel = pd.read_excel(uploaded_file)
+                final_items = df_excel.to_dict(orient='records')
 
-            # معالجة الصور
+            # الحالة 3: الصور (بدون تغيير)
             else:
                 data = process_with_pixtral(uploaded_file.getvalue(), uploaded_file.type)
-                if data and 'items' in data: final_items = data['items']
+                if data and 'items' in data:
+                    final_items = data['items']
 
-            # --- 5. عرض ومعالجة النتائج النهائية ---
+            # --- عرض النتائج المشتركة ---
             if final_items:
                 df = pd.DataFrame(final_items)
-                for col in ['qty', 'amount']:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-
-                # إضافة صفوف فارغة وسطرة الإجمالي
-                df_empty = pd.DataFrame({col: [""] * 2 for col in df.columns})
-                totals = {col: "" for col in df.columns}
-                totals['description'] = "TOTAL / الإجمالي"
-                totals['qty'] = df['qty'].sum()
-                totals['amount'] = df['amount'].sum()
-                df_total = pd.DataFrame([totals])
-
-                df_final = pd.concat([df.astype(object), df_empty, df_total], ignore_index=True)
-                df_final.index = list(range(1, len(df) + 1)) + [" ", "  ", "TOTAL"]
-
-                st.success(f"✅ تم تحليل {len(df)} صنف بنجاح!")
-                
-                def highlight(s):
-                    return ['background-color: #ffffcc; font-weight: bold' if s.name == "TOTAL" else '' for _ in s]
-                
-                st.dataframe(df_final.style.apply(highlight, axis=1), use_container_width=True)
+                st.success(f"✅ تم استخراج {len(df)} صنف بنجاح!")
+                st.dataframe(df, use_container_width=True)
                 
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df_final.to_excel(writer, index=True, sheet_name='ExtractedData')
-                    total_fmt = writer.book.add_format({'bg_color': '#ffffcc', 'bold': True, 'border': 1})
-                    writer.sheets['ExtractedData'].set_row(len(df_final), None, total_fmt)
+                    df.to_excel(writer, index=False, sheet_name='ExtractedData')
                 
-                st.download_button("📥 تحميل النتائج كملف Excel", output.getvalue(), f"Extracted_{uploaded_file.name}.xlsx")
+                st.download_button(
+                    label="📥 تحميل النتائج كملف Excel",
+                    data=output.getvalue(),
+                    file_name=f"Extracted_{uploaded_file.name}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
             else:
                 st.warning("⚠️ لم يتم العثور على بيانات منظمة.")
+
+st.markdown("---")
+st.caption("Clik-Plus Platform v3.5 - Optimized PDF Logic")
