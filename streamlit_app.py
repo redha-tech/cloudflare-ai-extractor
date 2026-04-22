@@ -37,12 +37,13 @@ def process_with_pixtral(file_bytes, mime_type):
         base64_file = base64.b64encode(file_bytes).decode('utf-8')
         data_url = f"data:{mime_type};base64,{base64_file}"
 
-        prompt = (
-            "Extract all items into JSON format with these exact keys: "
-            "hs_code, description, qty, unit_price, amount, origin. "
-            "Important: Keep Arabic text for description and origin. "
-            "Return ONLY a valid JSON object with a single key 'items' containing the list."
-        )
+       prompt = (
+    "Extract all items into JSON format with these exact keys: "
+    "hs_code, description, qty, unit_price, amount, origin. "
+    "Important: Extract all values EXACTLY as they are written in the document. "
+    "Do not translate, do not change language, and do not reformat text. "
+    "Return ONLY a valid JSON object with a single key 'items'."
+)
 
         response = client.chat.complete(
             model="pixtral-12b-2409",
