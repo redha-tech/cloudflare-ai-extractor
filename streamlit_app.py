@@ -3,14 +3,13 @@ import pandas as pd
 import json
 import base64
 import io
+import fitz  # PyMuPDF للتعامل مع الـ PDF
 
-# --- 1. آلية الاستيراد المرنة (تجنب ImportError) ---
+# --- 1. آلية الاستيراد المرنة ---
 try:
-    # الطريقة للنسخة الحديثة v1.1.0 وما فوق
     from mistralai import Mistral
 except ImportError:
     try:
-        # خطة بديلة لبعض بيئات التشغيل التي قد تجلب نسخة v2.0
         from mistralai.client import Mistral
     except ImportError:
         st.error("❌ السيرفر لا يزال لا يرى مكتبة Mistral. يرجى الضغط على Manage App ثم Reboot App.")
@@ -19,7 +18,6 @@ except ImportError:
 # --- 2. إعدادات الصفحة والواجهة ---
 st.set_page_config(page_title="Clik-Plus | Smart OCR", layout="wide", page_icon="🚢")
 
-# تنسيق CSS بسيط لتحسين المظهر
 st.markdown("""
     <style>
     .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #FF4B4B; color: white; }
@@ -27,24 +25,22 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# جلب المفتاح من Secrets
 MISTRAL_KEY = st.secrets.get("MISTRAL_API_KEY")
 
 # --- 3. دالة معالجة البيانات ---
 def process_with_pixtral(file_bytes, mime_type):
     if not MISTRAL_KEY:
-        st.error("⚠️ مفتاح API مفقود! أضف MISTRAL_API_KEY في إعدادات Secrets.")
+        st.error("⚠️ مفتاح API مفقود!")
         return None
 
     try:
-        # إنشاء العميل
         client = Mistral(api_key=MISTRAL_KEY)
-        
-        # تحويل الملف إلى Base64 ليتناسب مع Pixtral Engine
         base64_file = base64.b64encode(file_bytes).decode('utf-8')
-        data_url = f"data:{mime_type};base64,{base64_file}"
+        
+        # نستخدم image/jpeg كنوع افتراضي للبيانات الصورية المرسلة
+        actual_mime = mime_type if "pdf" not in mime_type else "image/jpeg"
+        data_url = f"data:{actual_mime};base64,{base64_file}"
 
-        # تعريف الحقول المطلوب استخراجها
         prompt = (
             "Extract all items into JSON format with these exact keys: "
             "hs_code, description, qty, unit_price, amount, origin. "
@@ -52,24 +48,18 @@ def process_with_pixtral(file_bytes, mime_type):
             "Return ONLY a valid JSON object with a single key 'items' containing the list."
         )
 
-        # إرسال الطلب للموديل
         response = client.chat.complete(
             model="pixtral-12b-2409",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": data_url}
-                    ]
-                }
-            ],
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": data_url}
+                ]
+            }],
             response_format={"type": "json_object"}
         )
-        
-        # تحويل النص المستلم إلى قاموس Python
         return json.loads(response.choices[0].message.content)
-
     except Exception as e:
         st.error(f"❌ فشل الاتصال بمحرك Mistral: {str(e)}")
         return None
@@ -78,27 +68,45 @@ def process_with_pixtral(file_bytes, mime_type):
 st.title("🚢 Clik-Plus | المستخرج الذكي")
 st.markdown("تحليل الفواتير والمستندات باستخدام محرك **Pixtral AI**.")
 
-# رفع الملف
-uploaded_file = st.file_uploader("ارفع الفاتورة (صيغة PNG, JPG, JPEG)", type=['png', 'jpg', 'jpeg'])
+# تحديث الأنواع المسموح بها لتشمل PDF و Excel
+uploaded_file = st.file_uploader("ارفع الملف (PDF, Excel, PNG, JPG)", type=['png', 'jpg', 'jpeg', 'pdf', 'xlsx', 'xls'])
 
 if uploaded_file:
-    # عرض معاينة للصورة المرفوعة
-    with st.expander("👁️ معاينة المستند المرفوع"):
-        st.image(uploaded_file, use_column_width=True)
-
+    file_ext = uploaded_file.name.split('.')[-1].lower()
+    
     if st.button("🚀 تحليل واستخراج البيانات الآن"):
-        with st.spinner("جاري تحليل المستند واستخراج البيانات..."):
-            data = process_with_pixtral(uploaded_file.getvalue(), uploaded_file.type)
-            
-            if data and 'items' in data:
-                # تحويل البيانات إلى DataFrame لعرضها بشكل جميل
-                df = pd.DataFrame(data['items'])
-                
-                # عرض النتائج
+        with st.spinner("جاري معالجة المستند..."):
+            final_items = []
+
+            # الحالة 1: ملفات PDF (تحويل كل صفحة لصورة ومعالجتها)
+            if file_ext == 'pdf':
+                pdf_content = uploaded_file.getvalue()
+                doc = fitz.open(stream=pdf_content, filetype="pdf")
+                for page in doc:
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                    img_bytes = pix.tobytes("jpeg")
+                    data = process_with_pixtral(img_bytes, "image/jpeg")
+                    if data and 'items' in data:
+                        final_items.extend(data['items'])
+                doc.close()
+
+            # الحالة 2: ملفات Excel (قراءة مباشرة لضمان الدقة الرقمية)
+            elif file_ext in ['xlsx', 'xls']:
+                df_excel = pd.read_excel(uploaded_file)
+                final_items = df_excel.to_dict(orient='records')
+
+            # الحالة 3: الصور العادية
+            else:
+                data = process_with_pixtral(uploaded_file.getvalue(), uploaded_file.type)
+                if data and 'items' in data:
+                    final_items.extend(data['items'])
+
+            # --- عرض النتائج المشتركة ---
+            if final_items:
+                df = pd.DataFrame(final_items)
                 st.success(f"✅ تم استخراج {len(df)} صنف بنجاح!")
                 st.dataframe(df, use_container_width=True)
                 
-                # إنشاء ملف Excel للتحميل
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                     df.to_excel(writer, index=False, sheet_name='ExtractedData')
@@ -110,8 +118,7 @@ if uploaded_file:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             else:
-                st.warning("⚠️ لم يتمكن المحرك من العثور على بيانات منظمة. حاول رفع صورة أكثر وضوحاً.")
+                st.warning("⚠️ لم يتم العثور على بيانات منظمة.")
 
-# تذييل الصفحة
 st.markdown("---")
-st.caption("Clik-Plus Platform v2.0 - Powered by Mistral Pixtral")
+st.caption("Clik-Plus Platform v3.0 - Powered by Mistral Pixtral")
