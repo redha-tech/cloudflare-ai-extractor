@@ -33,7 +33,6 @@ def process_with_pixtral(file_bytes, mime_type):
         actual_mime = mime_type if "pdf" not in mime_type else "image/jpeg"
         data_url = f"data:{actual_mime};base64,{base64_file}"
 
-        # تحديث الـ Prompt ليشمل الوزن (Weight)
         prompt = (
             "Extract items into JSON with these keys: "
             "hs_code, description, qty, unit_price, amount, origin, weight. "
@@ -116,37 +115,42 @@ if uploaded_file:
             if final_items:
                 df = pd.DataFrame(final_items)
                 
-                # 1. جعل الترقيم يبدأ من 1
+                # 1. ضبط الترقيم
                 df.index = df.index + 1
                 df.index.name = "#"
 
-                # 2. التحقق من القيم الصفرية أو الخصومات
-                zero_val_items = []
-                for idx, row in df.iterrows():
-                    # التحقق من السعر أو المجموع (Amount)
-                    try:
-                        price = float(row.get('unit_price', 0))
-                        amount = float(row.get('amount', 0))
-                        desc = row.get('description', f'Item {idx}')
-                        
-                        if price <= 0 or amount <= 0:
-                            zero_val_items.append(f"الصنف #{idx}: {desc}")
-                    except:
-                        continue
+                # تنظيف وتحويل الأعمدة الرقمية
+                for col in ['amount', 'unit_price', 'qty']:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
-                if zero_val_items:
-                    st.warning("⚠️ تنبيه: تم العثور على أصناف بقيمة صفرية أو خصم:")
-                    for item in zero_val_items:
-                        st.write(f"- {item}")
+                # 2. فحص القيم الصفرية/الخصومات (التنبيه المدمج)
+                zero_items = []
+                if 'amount' in df.columns and 'unit_price' in df.columns:
+                    zero_items = df[(df['amount'] <= 0) | (df['unit_price'] <= 0)].index.tolist()
+                
+                if zero_items:
+                    items_list = ", ".join([f"#{idx}" for idx in zero_items])
+                    st.warning(f"⚠️ تنبيه: تم العثور على قيم صفرية أو خصم في الأصناف التالية: {items_list}")
+
+                # 3. حساب الإجمالي الكلي
+                total_val = df['amount'].sum() if 'amount' in df.columns else 0
 
                 # عرض النتائج
                 st.success(f"✅ تم استخراج {len(df)} صنف بنجاح!")
                 st.dataframe(df, use_container_width=True)
                 
-                # تحميل Excel
+                # عرض الإجمالي بشكل بارز
+                st.info(f"📊 **إجمالي المبلغ الكلي (Total Amount): {total_val:,.2f}**")
+                
+                # إعداد ملف Excel مع صف الإجمالي
+                df_with_total = df.copy()
+                df_with_total.loc['Total'] = None
+                df_with_total.at['Total', 'amount'] = total_val
+                
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df.to_excel(writer, index=True, sheet_name='Data')
+                    df_with_total.to_excel(writer, index=True, sheet_name='Data')
                 
                 st.download_button(
                     label="📥 تحميل النتائج كملف Excel",
