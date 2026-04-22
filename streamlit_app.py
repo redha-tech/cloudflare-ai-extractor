@@ -64,8 +64,7 @@ smart_map = {
     'unit_price': ['price', 'rate', 'unit', 'fob', 'سعر', 'فئة', 'قيمة'],
     'amount': ['amount', 'total', 'ext', 'value', 'المبلغ', 'الاجمالي', 'القيمة'],
     'origin': ['origin', 'c/o', 'made', 'source', 'المنشأ', 'بلد', 'مصدر']
-}
-                
+}   
                 new_cols = {}
                 for official, synonyms in smart_map.items():
                     for actual in df_raw.columns:
