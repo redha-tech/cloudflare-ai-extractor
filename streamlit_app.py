@@ -5,47 +5,51 @@ import base64
 import io
 import fitz  # PyMuPDF
 
-# --- 1. آلية الاستيراد المرنة ---
-try:
-    from mistralai import Mistral
-except ImportError:
-    from mistralai.client import Mistral
-
-# --- 2. إعدادات الصفحة والواجهة ---
+# --- 1. إعدادات الواجهة ---
 st.set_page_config(page_title="Clik-Plus | Smart OCR", layout="wide", page_icon="🚢")
 
 st.markdown("""
     <style>
     .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #FF4B4B; color: white; }
     .stDataFrame { border: 1px solid #e6e9ef; border-radius: 5px; }
-    .total-box { padding: 10px; background-color: #f0f2f6; border-radius: 10px; margin-top: 10px; border-left: 5px solid #FF4B4B; }
     </style>
     """, unsafe_allow_html=True)
 
 MISTRAL_KEY = st.secrets.get("MISTRAL_API_KEY")
+
+# --- 2. التعليمات الذكية للنموذج (البرومبت الموحد) ---
+# هنا نطلب من النظام فهم "المعنى" بغض النظر عن المسمى في الفاتورة
+MASTER_PROMPT = (
+    "Analyze the provided document and extract items into a structured JSON format. "
+    "Even if the column names in the document are different or in different languages, map them to these exact keys:\n"
+    "1. hs_code: (Harmonized System code, digits)\n"
+    "2. description: (The product name or details, keep Arabic if present)\n"
+    "3. qty: (Quantity)\n"
+    "4. unit_price: (Price per unit)\n"
+    "5. amount: (Total line amount/subtotal)\n"
+    "6. origin: (Country of origin/made in, keep Arabic if present)\n"
+    "7. gross_weight: (Total weight including packaging)\n"
+    "8. net_weight: (Actual product weight)\n"
+    "9. pkg: (Package type like PK, Pallet, Box)\n"
+    "10. invoice_number: (The invoice reference number found in the document)\n\n"
+    "Return ONLY a JSON object with a single key 'items' containing the list of objects."
+)
 
 # --- 3. الدوال البرمجية ---
 
 def process_with_pixtral(file_bytes, mime_type):
     if not MISTRAL_KEY: return None
     try:
+        from mistralai import Mistral
         client = Mistral(api_key=MISTRAL_KEY)
         base64_file = base64.b64encode(file_bytes).decode('utf-8')
         actual_mime = mime_type if "pdf" not in mime_type else "image/jpeg"
         data_url = f"data:{actual_mime};base64,{base64_file}"
 
-        prompt = (
-            "Extract items into JSON with these keys: "
-            "hs_code, description, qty, unit_price, amount, origin, weight. "
-            "If weight is not mentioned, return null. "
-            "Important: Keep Arabic text for description and origin. "
-            "Return ONLY a JSON object with a single key 'items'."
-        )
-
         response = client.chat.complete(
             model="pixtral-12b-2409",
             messages=[{"role": "user", "content": [
-                {"type": "text", "text": prompt},
+                {"type": "text", "text": MASTER_PROMPT},
                 {"type": "image_url", "image_url": data_url}
             ]}],
             response_format={"type": "json_object"}
@@ -58,16 +62,12 @@ def process_with_pixtral(file_bytes, mime_type):
 def process_pdf_text(text_content):
     if not MISTRAL_KEY: return None
     try:
+        from mistralai import Mistral
         client = Mistral(api_key=MISTRAL_KEY)
-        prompt = (
-            "Extract items from the text into JSON: "
-            "hs_code, description, qty, unit_price, amount, origin, weight. "
-            "Keep Arabic text. Return ONLY JSON with key 'items'.\n\n"
-            f"Text content:\n{text_content}"
-        )
+        full_prompt = f"{MASTER_PROMPT}\n\nDocument Text Content:\n{text_content}"
         response = client.chat.complete(
             model="mistral-small-latest",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": full_prompt}],
             response_format={"type": "json_object"}
         )
         return json.loads(response.choices[0].message.content)
@@ -78,21 +78,21 @@ def process_pdf_text(text_content):
 # --- 4. واجهة المستخدم ---
 st.title("🚢 Clik-Plus | المستخرج الذكي")
 
-uploaded_file = st.file_uploader("ارفع الملف (PDF, Excel, PNG, JPG)", type=['png', 'jpg', 'jpeg', 'pdf', 'xlsx', 'xls'])
+uploaded_file = st.file_uploader("ارفع الملف (PDF, Excel, Images)", type=['png', 'jpg', 'jpeg', 'pdf', 'xlsx', 'xls'])
 
 if uploaded_file:
     file_ext = uploaded_file.name.split('.')[-1].lower()
     
     if st.button("🚀 تحليل واستخراج البيانات الآن"):
-        with st.spinner("جاري تحليل البيانات وفحص القيم..."):
+        with st.spinner("جاري التعرف على المسميات وتحليل القيم..."):
             final_items = []
 
+            # معالجة الملفات حسب النوع
             if file_ext == 'pdf':
                 pdf_content = uploaded_file.getvalue()
                 doc = fitz.open(stream=pdf_content, filetype="pdf")
                 full_text = "".join([page.get_text() for page in doc])
                 doc.close()
-                
                 if full_text.strip():
                     data = process_pdf_text(full_text)
                     if data and 'items' in data: final_items = data['items']
@@ -105,61 +105,54 @@ if uploaded_file:
                     doc.close()
 
             elif file_ext in ['xlsx', 'xls']:
-                df_excel = pd.read_excel(uploaded_file)
-                final_items = df_excel.to_dict(orient='records')
+                # معالجة ملفات إكسل بملء الخلايا المدمجة تلقائياً
+                df_excel = pd.read_excel(uploaded_file).ffill()
+                # نرسل بيانات الإكسل للنموذج ليعيد ترتيب الأعمدة حسب المطلوب
+                data = process_pdf_text(df_excel.to_string())
+                if data and 'items' in data: final_items = data['items']
 
             else:
                 data = process_with_pixtral(uploaded_file.getvalue(), uploaded_file.type)
                 if data and 'items' in data: final_items = data['items']
 
-            # --- معالجة وتنبيهات البيانات ---
             if final_items:
                 df = pd.DataFrame(final_items)
                 
-                # جعل الترقيم يبدأ من 1
-                df.index = df.index + 1
-                df.index.name = "#"
+                # تحويل القيم لنوع رقمي لضمان دقة العمليات الحسابية
+                cols_to_fix = ['qty', 'amount', 'gross_weight', 'net_weight', 'unit_price']
+                for c in cols_to_fix:
+                    if c in df.columns:
+                        df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
 
-                # تنبيه القيم الصفرية في سطر واحد
-                zero_val_items = []
-                for idx, row in df.iterrows():
-                    try:
-                        price = float(row.get('unit_price', 0))
-                        amount = float(row.get('amount', 0))
-                        if price <= 0 or amount <= 0:
-                            zero_val_items.append(str(idx))
-                    except:
-                        continue
+                # عرض تنبيه الخصومات في سطر واحد
+                zero_rows = df[df['amount'] == 0].index.tolist()
+                if zero_rows:
+                    st.warning(f"⚠️ تنبيه: تم العثور على أسطر صفرية/خصم في السطور رقم: {', '.join(map(str, [r+1 for r in zero_rows]))}")
 
-                if zero_val_items:
-                    st.warning(f"⚠️ تنبيه: أصناف بقيمة صفرية أو خصم (رقم): {', '.join(zero_val_items)}")
-
-                # عرض النتائج
-                st.success(f"✅ تم استخراج {len(df)} صنف بنجاح!")
-                st.dataframe(df, use_container_width=True)
+                # --- إضافة سطر TOTAL كآخر سطر في الجدول ---
+                totals_row = {
+                    'description': '--- TOTAL ---',
+                    'qty': df['qty'].sum(),
+                    'amount': df['amount'].sum(),
+                    'gross_weight': df['gross_weight'].sum(),
+                    'net_weight': df['net_weight'].sum(),
+                    'hs_code': None, 'unit_price': None, 'origin': None, 'pkg': None, 'invoice_number': None
+                }
                 
-                # --- القسم الديناميكي للمجاميع ---
-                try:
-                    total_amount = pd.to_numeric(df['amount'], errors='coerce').sum()
-                    total_weight = pd.to_numeric(df['weight'], errors='coerce').sum()
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.markdown(f"<div class='total-box'><h3>💰 إجمالي المبلغ: {total_amount:,.2f}</h3></div>", unsafe_allow_html=True)
-                    with col2:
-                        st.markdown(f"<div class='total-box'><h3>⚖️ إجمالي الوزن: {total_weight:,.2f}</h3></div>", unsafe_allow_html=True)
-                except:
-                    st.info("ملاحظة: تعذر حساب المجاميع تلقائياً بسبب تنسيق البيانات.")
+                df_final = pd.concat([df, pd.DataFrame([totals_row])], ignore_index=True)
+                
+                # إعداد الفهرس (Index) ليظهر كأرقام ثم "TOTAL"
+                new_idx = list(range(1, len(df) + 1)) + ["TOTAL"]
+                df_final.index = new_idx
 
-                # تحميل Excel
+                st.success(f"✅ تم تحليل {len(df)} صنف بنجاح!")
+                st.dataframe(df_final, use_container_width=True)
+
+                # تصدير ملف Excel
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df.to_excel(writer, index=True, sheet_name='Data')
+                    df_final.to_excel(writer, index=True, sheet_name='ExtractedData')
                 
-                st.download_button(
-                    label="📥 تحميل النتائج كملف Excel",
-                    data=output.getvalue(),
-                    file_name=f"Extracted_{uploaded_file.name}.xlsx"
-                )
+                st.download_button("📥 تحميل النتائج كملف Excel", output.getvalue(), f"Result_{uploaded_file.name}.xlsx")
             else:
-                st.warning("⚠️ لم يتم العثور على بيانات منظمة.")
+                st.error("❌ لم نتمكن من استخراج البيانات. تأكد من وضوح الملف.")
