@@ -29,106 +29,42 @@ MISTRAL_KEY = st.secrets.get("MISTRAL_API_KEY")
 
 # --- 3. دالات المعالجة الذكية ---
 
+# --- تحديث دالة البرومبت لتصبح "عالمية" وتفهم أي فاتورة ---
+
 def get_smart_prompt(context_type="image", text_content=None):
-    """دالة لإنشاء برومبت ذكي يركز على المنطق والسياق"""
     base_prompt = (
-        "You are a Senior Customs & Logistics Specialist. Analyze the provided document logically:\n"
-        "1. **Identify the Main Table**: Locate where the items are listed.\n"
-        "2. **HS Code Logic**: Look for numbers with 6, 8, or 10 digits. \n"
-        "   - CRITICAL: If a number is 13 digits or starts with common barcode prefixes (like 629), IGNORE IT as an HS code.\n"
-        "   - SEARCH: Look near the description or under headers like 'Tariff', 'Commodity Code', 'بند', 'تنسيق'.\n"
-        "3. **Amount Logic**: Ensure (Quantity * Unit Price = Amount). If the document says 'Total', verify it logically.\n"
-        "4. **Origin Logic**: Find country names or ISO codes. If mentioned in the item line, capture it.\n"
-        "5. **Extraction**: Keep values EXACTLY as written. No translation. If missing, return \"\".\n"
-        "Return ONLY a valid JSON object: {\"items\": [{"
-        "\"hs_code\": \"\", \"description\": \"\", \"qty\": \"\", \"unit_price\": \"\", \"amount\": \"\", \"origin\": \"\""
-        "}]}"
+        "You are an AI Data Scientist specialized in Global Trade Documents. "
+        "Your goal is to find the 'Logic' of the invoice, regardless of its layout:\n"
+        
+        "1. **Semantic Mapping**: Even if headers are missing, identify columns by content:\n"
+        "   - **HS_CODE**: Look for numbers that are 6, 8, or 10 digits long. "
+        "     (Logic: HS codes often have dots like 7326.90. Ignore 13-digit barcodes).\n"
+        "   - **DESCRIPTION**: The longest text field in the row.\n"
+        "   - **QTY**: Small integers near the description.\n"
+        "   - **PRICE**: Numbers with decimals (0.00).\n"
+        "   - **ORIGIN**: Look for country names (China, USA, etc.) or 'C/O'.\n"
+        
+        "2. **Table Reconstruction**: If the invoice has multiple rows, ensure every item is captured. "
+        "Do not skip rows. If a value is missing in one row but exists in the header, use logic.\n"
+        
+        "3. **Zero Translation**: Extract text EXACTLY. If the description is in Arabic, keep it Arabic. "
+        "If it's English, keep it English.\n"
+        
+        "4. **Strict JSON**: Return ONLY a valid JSON object with the key 'items'."
     )
     if context_type == "text":
-        return f"{base_prompt}\n\nDocument Text Content:\n{text_content}"
+        return f"{base_prompt}\n\nInvoice Content to Analyze:\n{text_content}"
     return base_prompt
 
-def process_with_pixtral(file_bytes, mime_type):
-    if not MISTRAL_KEY:
-        st.error("⚠️ مفتاح API مفقود!")
-        return None
-    try:
-        client = Mistral(api_key=MISTRAL_KEY)
-        base64_file = base64.b64encode(file_bytes).decode('utf-8')
-        data_url = f"data:{mime_type};base64,{base64_file}"
-
-        response = client.chat.complete(
-            model="pixtral-12b-2409",
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": get_smart_prompt()},
-                    {"type": "image_url", "image_url": data_url}
-                ]
-            }],
-            response_format={"type": "json_object"}
-        )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        st.error(f"❌ فشل الاتصال بمحرك Pixtral: {str(e)}")
-        return None
-
-def process_pdf_text(text_content):
-    if not MISTRAL_KEY: return None
-    try:
-        client = Mistral(api_key=MISTRAL_KEY)
-        response = client.chat.complete(
-            model="mistral-small-latest",
-            messages=[{"role": "user", "content": get_smart_prompt("text", text_content)}],
-            response_format={"type": "json_object"}
-        )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        st.error(f"❌ خطأ في تحليل نص PDF: {str(e)}")
-        return None
-
-# --- 4. واجهة المستخدم الرسومية ---
-st.title("🚢 Clik-Plus | المستخرج الذكي (Smart OCR)")
-
-uploaded_file = st.file_uploader("ارفع الملف (PDF, Excel, PNG, JPG)", type=['png', 'jpg', 'jpeg', 'pdf', 'xlsx', 'xls'])
-
-if uploaded_file:
-    file_ext = uploaded_file.name.split('.')[-1].lower()
-    
-    if st.button("🚀 تحليل واستخراج البيانات الآن"):
-        with st.spinner("جاري معالجة المستند منطقياً..."):
-            final_items = []
-
-            if file_ext == 'pdf':
-                pdf_content = uploaded_file.getvalue()
-                doc = fitz.open(stream=pdf_content, filetype="pdf")
-                full_text = "".join([page.get_text() for page in doc])
-                doc.close()
-                
-                if full_text.strip():
-                    data = process_pdf_text(full_text)
-                    if data and 'items' in data: final_items = data['items']
-                else:
-                    doc = fitz.open(stream=pdf_content, filetype="pdf")
-                    for page in doc:
-                        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                        data = process_with_pixtral(pix.tobytes("jpeg"), "image/jpeg")
-                        if data and 'items' in data: final_items.extend(data['items'])
-                    doc.close()
-
-            elif file_ext in ['xlsx', 'xls']:
-                df_raw = pd.read_excel(uploaded_file)
-                df_raw.columns = [str(c).strip() for c in df_raw.columns]
-                
-                # خريطة ذكية للمرادفات (Bilingual Smart Map)
-                smart_map = {
-                    'hs_code': ['hs', 'code', 'commodity', 'tariff', 'بند', 'رمز', 'تنسيق'],
-                    'description': ['desc', 'item', 'product', 'البيان', 'الصنف', 'الوصف', 'الاسم'],
-                    'qty': ['qnt', 'quantity', 'الكمية', 'عدد', 'pcs'],
-                    'unit_price': ['rate', 'price', 'سعر', 'فئة', 'unit'],
-                    'amount': ['total', 'value', 'amount', 'المبلغ', 'القيمة'],
-                    'origin': ['country', 'made', 'origin', 'المنشأ', 'بلد', 'مصدر']
-                }
+# --- تحديث منطق الإكسل ليكون مرناً جداً (Extreme Flexibility) ---
+smart_map = {
+    'hs_code': ['hs', 'code', 'commodity', 'tariff', 'tariff', 'h.s', 'بند', 'نسق', 'جمارك'],
+    'description': ['desc', 'item', 'product', 'article', 'البيان', 'الوصف', 'الصنف', 'السلعة'],
+    'qty': ['qty', 'quantity', 'qnt', 'count', 'الكمية', 'عدد', 'العدد'],
+    'unit_price': ['price', 'rate', 'unit', 'fob', 'سعر', 'فئة', 'قيمة'],
+    'amount': ['amount', 'total', 'ext', 'value', 'المبلغ', 'الاجمالي', 'القيمة'],
+    'origin': ['origin', 'c/o', 'made', 'source', 'المنشأ', 'بلد', 'مصدر']
+}
                 
                 new_cols = {}
                 for official, synonyms in smart_map.items():
