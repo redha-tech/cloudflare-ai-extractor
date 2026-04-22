@@ -28,7 +28,7 @@ st.markdown("""
 
 MISTRAL_KEY = st.secrets.get("MISTRAL_API_KEY")
 
-# --- 3. دالة معالجة البيانات (بدون تغيير في المنطق الأساسي) ---
+# --- 3. دالة معالجة البيانات ---
 def process_with_pixtral(file_bytes, mime_type):
     if not MISTRAL_KEY:
         st.error("⚠️ مفتاح API مفقود!")
@@ -38,7 +38,6 @@ def process_with_pixtral(file_bytes, mime_type):
         client = Mistral(api_key=MISTRAL_KEY)
         base64_file = base64.b64encode(file_bytes).decode('utf-8')
         
-        # نستخدم دائماً jpeg كمime_type للصور المحولة لضمان التوافق
         actual_mime = mime_type if "pdf" not in mime_type and "excel" not in mime_type else "image/jpeg"
         data_url = f"data:{actual_mime};base64,{base64_file}"
 
@@ -51,15 +50,13 @@ def process_with_pixtral(file_bytes, mime_type):
 
         response = client.chat.complete(
             model="pixtral-12b-2409",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": data_url}
-                    ]
-                }
-            ],
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": data_url}
+                ]
+            }],
             response_format={"type": "json_object"}
         )
         return json.loads(response.choices[0].message.content)
@@ -71,7 +68,6 @@ def process_with_pixtral(file_bytes, mime_type):
 st.title("🚢 Clik-Plus | المستخرج الذكي")
 st.markdown("تحليل الفواتير (PDF, Excel, Images) باستخدام محرك **Pixtral AI**.")
 
-# تحديث أنواع الملفات المسموح بها
 uploaded_file = st.file_uploader("ارفع الملف (PDF, Excel, PNG, JPG)", type=['png', 'jpg', 'jpeg', 'pdf', 'xlsx', 'xls'])
 
 if uploaded_file:
@@ -81,11 +77,10 @@ if uploaded_file:
         with st.spinner("جاري معالجة المستند..."):
             final_items = []
             
-            # حالة 1: ملف PDF (تحويل كل صفحة لصورة ومعالجتها)
-           if file_ext == 'pdf':
-    # قراءة محتوى الملف مرة واحدة في متغير
-    pdf_content = uploaded_file.getvalue() 
-    images = convert_from_bytes(pdf_content)
+            # حالة 1: ملف PDF
+            if file_ext == 'pdf':
+                pdf_content = uploaded_file.getvalue() 
+                images = convert_from_bytes(pdf_content)
                 for i, img in enumerate(images):
                     buf = io.BytesIO()
                     img.save(buf, format="JPEG")
@@ -93,10 +88,9 @@ if uploaded_file:
                     if data and 'items' in data:
                         final_items.extend(data['items'])
             
-            # حالة 2: ملف Excel (قراءته كبيانات مباشرة أو تحويله لصورة - هنا سنعتمد المعالجة المباشرة لضمان الدقة)
+            # حالة 2: ملف Excel
             elif file_ext in ['xlsx', 'xls']:
                 df_excel = pd.read_excel(uploaded_file)
-                # هنا يمكننا عرض البيانات مباشرة أو تحويلها لـ JSON لتناسب هيكلية التطبيق
                 final_items = df_excel.to_dict(orient='records')
             
             # حالة 3: صور عادية
@@ -105,7 +99,7 @@ if uploaded_file:
                 if data and 'items' in data:
                     final_items.extend(data['items'])
             
-            # --- عرض النتائج المشتركة ---
+            # --- عرض النتائج ---
             if final_items:
                 df = pd.DataFrame(final_items)
                 st.success(f"✅ تم استخراج {len(df)} صنف بنجاح!")
