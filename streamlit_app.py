@@ -6,103 +6,112 @@ import requests
 import fitz  # PyMuPDF
 
 # --- 1. إعدادات الصفحة ---
-st.set_page_config(page_title="Clik-Plus | Qwen Vision Dedicated", layout="wide", page_icon="🚢")
+st.set_page_config(page_title="Clik-Plus | Qwen Auto-Vision", layout="wide", page_icon="🚢")
 
-# المفتاح الخاص بك (الذي يبدأ بـ gsk_)
+# المفتاح الذي يبدأ بـ gsk_
 API_KEY = st.secrets.get("GROQ_API_KEY")
 
-# --- 2. دالة المعالجة باستخدام Qwen Vision حصراً ---
-def process_with_qwen_vision(file_bytes, mime_type):
-    if not API_KEY:
-        st.error("⚠️ مفتاح API مفقود!")
-        return None
-    
+# --- 2. دالة جلب موديل Qwen Vision المتاح حالياً في حسابك ---
+def find_live_qwen_vision_model():
     try:
-        # تحويل الصورة إلى Base64
+        headers = {"Authorization": f"Bearer {API_KEY}"}
+        # جلب قائمة الموديلات التي يراها مفتاحك حالياً
+        response = requests.get("https://api.groq.com/openai/v1/models", headers=headers)
+        if response.status_code == 200:
+            models = response.json().get('data', [])
+            # البحث عن موديل يحتوي على qwen و vl أو vision
+            for m in models:
+                model_id = m['id'].lower()
+                if "qwen" in model_id and ("vl" in model_id or "vision" in model_id):
+                    return m['id']
+            
+            # إذا لم يجد VL، سيبحث عن أي موديل Qwen متاح كخيار ثانوي
+            for m in models:
+                if "qwen" in m['id'].lower():
+                    return m['id']
+        return None
+    except Exception as e:
+        st.error(f"خطأ في الاتصال بالقائمة: {str(e)}")
+        return None
+
+# --- 3. محرك المعالجة (Vision Engine) ---
+def process_file_with_qwen(file_bytes, mime_type):
+    target_model = find_live_qwen_vision_model()
+    
+    if not target_model:
+        st.error("❌ لم يتم العثور على أي موديل Qwen في حسابك على Groq. تأكد من تفعيله.")
+        return None
+
+    try:
         base64_image = base64.b64encode(file_bytes).decode('utf-8')
-        
-        # الرابط الرسمي لـ Groq
         API_URL = "https://api.groq.com/openai/v1/chat/completions"
-        
-        # ملاحظة هامة: يجب أن يكون الموديل يدعم Vision (VL)
-        # إذا لم يعمل هذا الاسم، تأكد من الاسم الدقيق في Console Groq (مثل qwen-2.5-vl-72b)
-        MODEL_ID = "qwen-2.5-vl-72b" 
 
         headers = {
             "Authorization": f"Bearer {API_KEY}",
             "Content-Type": "application/json"
         }
 
-        # الهيكل الصحيح لإرسال الصور لـ Qwen على Groq
+        # هيكلة الرسالة بما يتوافق مع موديلات الرؤية
         payload = {
-            "model": MODEL_ID,
+            "model": target_model,
             "messages": [
                 {
                     "role": "user",
                     "content": [
                         {
                             "type": "text", 
-                            "text": "Extract all items from this document into a JSON format. Required fields: hs_code, description, qty, weight, origin. Ensure Arabic text is preserved. Return ONLY JSON with 'items' key."
+                            "text": "Extract all items into JSON: hs_code, description, qty, weight, origin. Return ONLY JSON with an 'items' key."
                         },
                         {
                             "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{base64_image}"
-                            }
+                            "image_url": {"url": f"data:{mime_type};base64,{base64_image}"}
                         }
                     ]
                 }
             ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.1 # لزيادة الدقة في الأرقام
+            "response_format": {"type": "json_object"}
         }
 
         response = requests.post(API_URL, headers=headers, json=payload)
-        
+        res_json = response.json()
+
         if response.status_code != 200:
-            error_msg = response.json().get('error', {}).get('message', 'Unknown Error')
-            # إذا كان الخطأ متعلقاً بعدم وجود الموديل، سنخبر المستخدم بالبحث عن الاسم الصحيح
-            if "does not exist" in error_msg:
-                st.error(f"❌ الموديل {MODEL_ID} غير متاح في حسابك. يرجى التأكد من اسم موديل Qwen Vision المتاح لك في Groq Console.")
-            else:
-                st.error(f"❌ خطأ من Groq: {error_msg}")
+            st.error(f"❌ خطأ ({target_model}): {res_json.get('error', {}).get('message')}")
             return None
 
-        content = response.json()['choices'][0]['message']['content']
-        return json.loads(content)
-
+        return json.loads(res_json['choices'][0]['message']['content'])
     except Exception as e:
-        st.error(f"❌ فشل الاتصال: {str(e)}")
+        st.error(f"❌ فشل المحرك: {str(e)}")
         return None
 
-# --- 3. واجهة المستخدم ---
-st.title("🚢 Clik-Plus | محرك Qwen للرؤية")
-st.info("هذا الإصدار مخصص لاستخدام Qwen Vision بمفتاح Groq (gsk).")
+# --- 4. واجهة المستخدم ---
+st.title("🚢 Clik-Plus | Qwen Vision Pro")
+st.markdown("استخراج البيانات الجمركية باستخدام نموذج **Qwen** المتاح في حسابك.")
 
-uploaded_file = st.file_uploader("ارفع الفاتورة أو بوليصة الشحن", type=['png', 'jpg', 'jpeg', 'pdf'])
+uploaded_file = st.file_uploader("ارفع الفاتورة أو المستند", type=['png', 'jpg', 'pdf'])
 
 if uploaded_file:
-    if st.button("🚀 استخراج البيانات (Qwen Vision)"):
-        with st.spinner("جاري قراءة الصور وتحليل البيانات عبر Qwen..."):
+    if st.button("🚀 بدء تحليل Qwen"):
+        with st.spinner("جاري فحص الموديلات النشطة وتحليل المستند..."):
             final_items = []
-            file_bytes = uploaded_file.read()
+            file_content = uploaded_file.read()
 
             if uploaded_file.type == "application/pdf":
-                # تحويل كل صفحة PDF إلى صورة لأن Qwen Vision يحتاج صور
-                doc = fitz.open(stream=file_bytes, filetype="pdf")
+                # تحويل كل صفحة PDF لصورة لأن Qwen Vision يحتاج صوراً
+                doc = fitz.open(stream=file_content, filetype="pdf")
                 for page in doc:
                     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                    data = process_with_qwen_vision(pix.tobytes("jpeg"), "image/jpeg")
+                    data = process_file_with_qwen(pix.tobytes("jpeg"), "image/jpeg")
                     if data and 'items' in data:
                         final_items.extend(data['items'])
                 doc.close()
             else:
-                # معالجة الصورة المباشرة
-                data = process_with_qwen_vision(file_bytes, uploaded_file.type)
+                # معالجة الصور
+                data = process_file_with_qwen(file_content, uploaded_file.type)
                 if data and 'items' in data:
                     final_items = data['items']
 
             if final_items:
-                st.success(f"✅ تم الاستخراج بنجاح!")
+                st.success("✅ اكتمل الاستخراج!")
                 df = pd.DataFrame(final_items)
                 st.data_editor(df, use_container_width=True)
