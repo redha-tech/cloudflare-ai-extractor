@@ -7,21 +7,41 @@ import io
 import fitz  # PyMuPDF
 
 # --- 1. إعدادات الصفحة ---
-st.set_page_config(page_title="Clik-Plus | Groq Qwen Engine", layout="wide", page_icon="🚢")
+st.set_page_config(page_title="Clik-Plus | Groq Auto-Model", layout="wide", page_icon="🚢")
 
-# استدعاء المفتاح (الذي يبدأ بـ gsk_)
 GROQ_API_KEY = st.secrets.get("GROQ_API_KEY") 
 
-# --- 2. دالة المعالجة الخاصة بـ Groq ---
-def process_with_groq_qwen(file_bytes, mime_type):
+# --- 2. دالة جلب الموديل المتاح حالياً في حسابك ---
+def get_active_model_id():
+    try:
+        headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+        # جلب قائمة الموديلات المتاحة لمفتاحك
+        response = requests.get("https://api.groq.com/openai/v1/models", headers=headers)
+        if response.status_code == 200:
+            models = response.json().get('data', [])
+            # البحث عن Qwen أولاً كما طلبت
+            for m in models:
+                if "qwen" in m['id'].lower() and ("vl" in m['id'].lower() or "vision" in m['id'].lower()):
+                    return m['id']
+            # إذا لم يجد Qwen Vision، يبحث عن أي موديل Vision آخر متاح (Llama مثلاً)
+            for m in models:
+                if "vision" in m['id'].lower():
+                    return m['id']
+        return "llama-3.2-11b-vision-preview" # كخيار أخير جداً
+    except:
+        return "llama-3.2-11b-vision-preview"
+
+# --- 3. دالة المعالجة ---
+def process_data(file_bytes, mime_type):
     if not GROQ_API_KEY:
-        st.error("⚠️ مفتاح gsk_ مفقود في Secrets!")
+        st.error("⚠️ مفتاح API مفقود!")
         return None
     
+    selected_model = get_active_model_id()
+    # st.write(f"🔍 الموديل المستخدم حالياً: {selected_model}") # إلغاء التعليق للتأكد من الموديل
+
     try:
         base64_file = base64.b64encode(file_bytes).decode('utf-8')
-        
-        # الرابط الرسمي لـ Groq
         API_URL = "https://api.groq.com/openai/v1/chat/completions" 
 
         headers = {
@@ -29,29 +49,14 @@ def process_with_groq_qwen(file_bytes, mime_type):
             "Content-Type": "application/json"
         }
 
-        # ملاحظة: في Groq، اسم الموديل لـ Qwen غالباً يكون qwen-2.5-72b أو مشابه
-        # سنستخدم الموديل الأكثر استقراراً للرؤية على Groq حالياً
-        MODEL_ID = "llama-3.2-11b-vision-instant" 
-        
-        # إذا كنت متأكداً أن Groq أضافت Qwen 3 في حسابك، استبدل الاسم أدناه بـ:
-        # qwen-2.5-vl-72b (تأكد من الاسم في console.groq.com)
-
-        prompt = (
-            "Extract invoice items into JSON. Keys: hs_code, description, qty, weight, origin, invoice_number. "
-            "Keep Arabic text. Return ONLY JSON with 'items' key."
-        )
-
         payload = {
-            "model": MODEL_ID,
+            "model": selected_model,
             "messages": [
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:{mime_type};base64,{base64_file}"}
-                        }
+                        {"type": "text", "text": "Extract invoice items into JSON. Keys: hs_code, description, qty, weight, origin, invoice_number. Keep Arabic. Return ONLY JSON with 'items' key."},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_file}"}}
                     ]
                 }
             ],
@@ -59,42 +64,38 @@ def process_with_groq_qwen(file_bytes, mime_type):
         }
 
         response = requests.post(API_URL, headers=headers, json=payload)
-        response_data = response.json()
+        res_json = response.json()
 
         if response.status_code != 200:
-            st.error(f"❌ خطأ من Groq ({response.status_code}): {response_data.get('error', {}).get('message')}")
+            st.error(f"❌ خطأ {response.status_code}: {res_json.get('error', {}).get('message')}")
             return None
 
-        content = response_data['choices'][0]['message']['content']
-        return json.loads(content)
-        
+        return json.loads(res_json['choices'][0]['message']['content'])
     except Exception as e:
         st.error(f"❌ فشل: {str(e)}")
         return None
 
-# --- 3. واجهة المستخدم ---
-st.title("🚢 Clik-Plus | Groq Engine")
-st.info("تم ضبط الإعدادات لتتوافق مع مفتاح Groq (gsk).")
+# --- 4. الواجهة ---
+st.title("🚢 Clik-Plus | المستخرج الذكي")
 
-uploaded_file = st.file_uploader("ارفع الفاتورة (PDF/Image)", type=['png', 'jpg', 'pdf'])
+uploaded_file = st.file_uploader("ارفع المستند", type=['png', 'jpg', 'pdf'])
 
 if uploaded_file:
     if st.button("🚀 استخراج البيانات"):
-        with st.spinner("جاري المعالجة عبر Groq..."):
+        with st.spinner("جاري تحليل البيانات..."):
             final_items = []
-            
             file_data = uploaded_file.read()
             
             if uploaded_file.type == "application/pdf":
                 doc = fitz.open(stream=file_data, filetype="pdf")
                 for page in doc:
                     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                    data = process_with_groq_qwen(pix.tobytes("jpeg"), "image/jpeg")
+                    data = process_data(pix.tobytes("jpeg"), "image/jpeg")
                     if data and 'items' in data:
                         final_items.extend(data['items'])
                 doc.close()
             else:
-                data = process_with_groq_qwen(file_data, uploaded_file.type)
+                data = process_data(file_data, uploaded_file.type)
                 if data and 'items' in data:
                     final_items = data['items']
 
