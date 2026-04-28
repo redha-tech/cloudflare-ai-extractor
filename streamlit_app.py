@@ -2,40 +2,45 @@ import streamlit as st
 import pandas as pd
 import json
 import base64
+import requests # سنستخدم requests لضمان توافق التنسيق
 import io
 import fitz  # PyMuPDF
-from groq import Groq
 
 # --- 1. إعدادات الصفحة ---
-st.set_page_config(page_title="Clik-Plus | Qwen 3 Engine", layout="wide", page_icon="🚢")
+st.set_page_config(page_title="Clik-Plus | Qwen 3 Fixed", layout="wide", page_icon="🚢")
 
-# استدعاء المفتاح (تأكد أن المفتاح يدعم الموديل المذكور في صورتك)
-GROQ_API_KEY = st.secrets.get("GROQ_API_KEY")
+# استدعاء المفتاح
+API_KEY = st.secrets.get("GROQ_API_KEY") 
 
-# --- 2. دالة المعالجة المخصصة لـ Qwen 3 ---
-def process_with_qwen3(file_bytes, mime_type):
-    if not GROQ_API_KEY:
-        st.error("⚠️ مفتاح API مفقود في Secrets!")
+# --- 2. دالة المعالجة المصححة للخطأ 400 ---
+def process_with_qwen3_fixed(file_bytes, mime_type):
+    if not API_KEY:
+        st.error("⚠️ مفتاح API مفقود!")
         return None
     
     try:
-        # ملاحظة: إذا كنت تستخدم OpenRouter أو منصة مشابهة للصورة، تأكد من تعديل base_url إذا لزم الأمر
-        client = Groq(api_key=GROQ_API_KEY) 
-        
-        # الاسم الدقيق من صورتك
-        MODEL_ID = "qwen/qwen3-32b" 
-
         base64_file = base64.b64encode(file_bytes).decode('utf-8')
         
+        # الرابط الخاص بالمنصة (تأكد إذا كان OpenRouter استخدم رابطهم)
+        # إذا كنت تستخدم OpenRouter: https://openrouter.ai/api/v1/chat/completions
+        # إذا كنت تستخدم Groq: https://api.groq.com/openai/v1/chat/completions
+        API_URL = "https://openrouter.ai/api/v1/chat/completions" 
+
+        headers = {
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json"
+        }
+
         prompt = (
-            "Extract items from this document into JSON format. "
+            "Extract items from this customs document into JSON format. "
             "Required keys: hs_code, description, qty, weight, origin, invoice_number. "
-            "Keep Arabic text for description and origin. "
-            "Return ONLY a valid JSON object with an 'items' key."
+            "Keep Arabic text. Return ONLY JSON with an 'items' key."
         )
 
-        chat_completion = client.chat.completions.create(
-            messages=[
+        # التنسيق الذي يحل مشكلة "must be a string" في بعض المنصات
+        payload = {
+            "model": "qwen/qwen3-32b",
+            "messages": [
                 {
                     "role": "user",
                     "content": [
@@ -47,50 +52,47 @@ def process_with_qwen3(file_bytes, mime_type):
                     ]
                 }
             ],
-            model=MODEL_ID,
-            response_format={"type": "json_object"}
-        )
-        return json.loads(chat_completion.choices[0].message.content)
+            "response_format": {"type": "json_object"}
+        }
+
+        response = requests.post(API_URL, headers=headers, json=payload)
+        response_json = response.json()
+
+        if response.status_code != 200:
+            st.error(f"❌ خطأ من المنصة: {response_json}")
+            return None
+
+        content = response_json['choices'][0]['message']['content']
+        return json.loads(content)
+        
     except Exception as e:
-        st.error(f"❌ خطأ في محرك Qwen 3: {str(e)}")
+        st.error(f"❌ فشل المعالجة: {str(e)}")
         return None
 
 # --- 3. واجهة المستخدم ---
-st.title("🚢 Clik-Plus | Qwen 3 Vision Engine")
-st.markdown(f"يتم الآن استخدام النموذج: `{ 'qwen/qwen3-32b' }` المستخرج من صورتك.")
+st.title("🚢 Clik-Plus | Qwen 3 Engine")
 
-uploaded_file = st.file_uploader("ارفع ملف الفاتورة أو المستند", type=['png', 'jpg', 'jpeg', 'pdf'])
+uploaded_file = st.file_uploader("ارفع الملف", type=['png', 'jpg', 'jpeg', 'pdf'])
 
 if uploaded_file:
-    file_ext = uploaded_file.name.split('.')[-1].lower()
-    
-    if st.button("🚀 استخراج البيانات الآن"):
-        with st.spinner("جاري التحليل بواسطة Qwen 3..."):
+    if st.button("🚀 تحليل واستخراج"):
+        with st.spinner("جاري التواصل مع Qwen 3..."):
             final_items = []
-
-            if file_ext == 'pdf':
-                pdf_content = uploaded_file.getvalue()
-                doc = fitz.open(stream=pdf_content, filetype="pdf")
+            
+            if uploaded_file.type == "application/pdf":
+                doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
                 for page in doc:
-                    # تحويل الصفحة لصورة بجودة عالية
                     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                    data = process_with_qwen3(pix.tobytes("jpeg"), "image/jpeg")
+                    data = process_with_qwen3_fixed(pix.tobytes("jpeg"), "image/jpeg")
                     if data and 'items' in data:
                         final_items.extend(data['items'])
                 doc.close()
             else:
-                data = process_with_qwen3(uploaded_file.getvalue(), uploaded_file.type)
+                data = process_with_qwen3_fixed(uploaded_file.getvalue(), uploaded_file.type)
                 if data and 'items' in data:
                     final_items = data['items']
 
             if final_items:
                 df = pd.DataFrame(final_items)
-                st.success("✅ تم الاستخراج بنجاح!")
-                # عرض البيانات في محرر تفاعلي
+                st.success("✅ تم الاستخراج!")
                 st.data_editor(df, use_container_width=True)
-                
-                # تصدير الملف
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df.to_excel(writer, index=False)
-                st.download_button("📥 تحميل النتائج كملف Excel", output.getvalue(), "Qwen3_Customs_Data.xlsx")
