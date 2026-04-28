@@ -6,3 +6,4 @@ pdf2image     # لتحويل صفحات PDF إلى صور
 Pillow        # لمعالجة الصور وتجهيزها لـ Mistral
 openpyxl      # لقراءة ملفات Excel الحديثة
 pymupdf
+groq
