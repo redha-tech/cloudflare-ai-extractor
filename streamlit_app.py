@@ -4,32 +4,55 @@ import json
 import base64
 import io
 import fitz  # PyMuPDF
-from groq import Groq # استيراد مكتبة Groq بدلاً من Mistral
+from groq import Groq
 
-# --- 2. إعدادات الصفحة والواجهة ---
-st.set_page_config(page_title="Clik-Plus | Qwen Smart OCR", layout="wide", page_icon="🚢")
+# --- 1. إعدادات الصفحة والواجهة ---
+st.set_page_config(page_title="Clik-Plus | Auto-Model OCR", layout="wide", page_icon="🚢")
 
-# الحصول على مفتاح Groq من Secrets
-GROQ_KEY = st.secrets.get("GROQ_API_KEY")
+# تخصيص واجهة المستخدم
+st.markdown("""
+    <style>
+    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #007bff; color: white; }
+    .stDataFrame { border: 1px solid #e6e9ef; border-radius: 5px; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# --- 3. دالة معالجة البيانات باستخدام Qwen (Vision) ---
-def process_with_qwen(file_bytes, mime_type):
-    if not GROQ_KEY:
-        st.error("⚠️ مفتاح GROQ_API_KEY مفقود!")
-        return None
+# الحصول على المفتاح من Secrets
+GROQ_API_KEY = st.secrets.get("GROQ_API_KEY")
+
+# --- 2. وظيفة اختيار أحدث موديل متاح تلقائياً ---
+def get_latest_vision_model(client):
     try:
-        client = Groq(api_key=GROQ_KEY)
+        models = client.models.list()
+        # البحث عن أحدث الموديلات التي تحتوي على كلمة vision وتصفيتها
+        vision_models = [m.id for m in models.data if "vision" in m.id.lower()]
+        if vision_models:
+            # ترتيب تنازلي لاختيار الأحدث (مثلاً 3.3 قبل 3.2)
+            vision_models.sort(reverse=True)
+            return vision_models[0]
+        return "llama-3.2-90b-vision-preview"  # موديل احتياطي في حال فشل البحث
+    except:
+        return "llama-3.2-11b-vision-preview"
+
+# --- 3. دالة المعالجة الأساسية ---
+def process_with_auto_vision(file_bytes, mime_type):
+    if not GROQ_API_KEY:
+        st.error("⚠️ مفتاح API مفقود!")
+        return None
+    
+    try:
+        client = Groq(api_key=GROQ_API_KEY)
+        
+        # اكتشاف الموديل المحدث تلقائياً
+        active_model = get_latest_vision_model(client)
+        
         base64_file = base64.b64encode(file_bytes).decode('utf-8')
         
-        # تحضير الطلب لنموذج Qwen أو Llama-Vision المتاح على Groq
-        # ملاحظة: استبدل اسم الموديل بـ qwen-2.5-vl-11b إذا كان متاحاً في حسابك
-        model_name = "llama-3.2-11b-vision-preview" 
-        
         prompt = (
-            "Analyze this customs document image. Extract all items into a JSON object. "
-            "Keys: hs_code, description, qty, weight, origin, invoice_number. "
+            "Extract items from this customs document into a structured JSON format. "
+            "Required fields: hs_code, description, qty, weight, origin, invoice_number. "
             "Keep Arabic text for description and origin. "
-            "Return ONLY a valid JSON with a single key 'items'."
+            "Return ONLY JSON with key 'items'."
         )
 
         chat_completion = client.chat.completions.create(
@@ -40,64 +63,61 @@ def process_with_qwen(file_bytes, mime_type):
                         {"type": "text", "text": prompt},
                         {
                             "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{base64_file}",
-                            },
+                            "image_url": {"url": f"data:{mime_type};base64,{base64_file}"},
                         },
                     ],
                 }
             ],
-            model=model_name,
+            model=active_model,
             response_format={"type": "json_object"}
         )
-        return json.loads(chat_completion.choices[0].message.content)
+        return json.loads(chat_completion.choices[0].message.content), active_model
     except Exception as e:
-        st.error(f"❌ فشل الاتصال بمحرك Groq/Qwen: {str(e)}")
-        return None
+        st.error(f"❌ خطأ: {str(e)}")
+        return None, None
 
-# --- واجهة المستخدم الرسومية ---
-st.title("🚢 Clik-Plus | المستخرج الذكي (Qwen Engine)")
-st.markdown("تحليل الفواتير الجمركية باستخدام نماذج **Vision** المتطورة عبر Groq.")
+# --- 4. واجهة المستخدم ---
+st.title("🚢 Clik-Plus | المستخرج الذكي (Auto-Update Mode)")
 
-uploaded_file = st.file_uploader("ارفع المستند (PDF, PNG, JPG)", type=['png', 'jpg', 'jpeg', 'pdf'])
+uploaded_file = st.file_uploader("ارفع ملف الفاتورة أو بوليصة الشحن", type=['png', 'jpg', 'jpeg', 'pdf'])
 
 if uploaded_file:
     file_ext = uploaded_file.name.split('.')[-1].lower()
     
-    if st.button("🚀 استخراج البيانات الآن"):
-        with st.spinner("جاري تحليل المستند باستخدام Qwen..."):
+    if st.button("🚀 تحليل المستند الآن"):
+        with st.spinner("جاري البحث عن أحدث موديل متاح ومعالجة البيانات..."):
             final_items = []
+            used_model = ""
 
             if file_ext == 'pdf':
                 pdf_content = uploaded_file.getvalue()
                 doc = fitz.open(stream=pdf_content, filetype="pdf")
-                
-                # في نماذج Vision، الأفضل دائماً تحويل صفحات الـ PDF لصور
                 for page in doc:
                     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                    data = process_with_qwen(pix.tobytes("jpeg"), "image/jpeg")
+                    data, used_model = process_with_auto_vision(pix.tobytes("jpeg"), "image/jpeg")
                     if data and 'items' in data:
                         final_items.extend(data['items'])
                 doc.close()
-
             else:
-                # معالجة الصور المباشرة
-                data = process_with_qwen(uploaded_file.getvalue(), uploaded_file.type)
+                data, used_model = process_with_auto_vision(uploaded_file.getvalue(), uploaded_file.type)
                 if data and 'items' in data:
                     final_items = data['items']
 
-            # --- عرض النتائج ---
             if final_items:
-                df = pd.DataFrame(final_items)
-                st.success(f"✅ تم استخراج {len(df)} صنف بنجاح!")
-                # إضافة الوزن وبلد المنشأ للجدول المعروض
-                st.dataframe(df, use_container_width=True)
+                st.success(f"✅ تم الاستخراج بنجاح باستخدام موديل: `{used_model}`")
                 
-                # خيار التحميل
+                df = pd.DataFrame(final_items)
+                # عرض محرر البيانات للسماح بالتعديل اليدوي
+                edited_df = st.data_editor(df, use_container_width=True)
+                
+                # تصدير لملف Excel
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    df.to_excel(writer, index=False)
+                    edited_df.to_excel(writer, index=False)
                 
-                st.download_button(label="📥 تحميل النتائج كملف Excel", 
-                                 data=output.getvalue(), 
-                                 file_name="extracted_customs_data.xlsx")
+                st.download_button(
+                    label="📥 تحميل النتائج (Excel)",
+                    data=output.getvalue(),
+                    file_name="Customs_Data.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
