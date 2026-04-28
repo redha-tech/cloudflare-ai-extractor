@@ -3,68 +3,52 @@ import pandas as pd
 import json
 import base64
 import requests
+import io
 import fitz  # PyMuPDF
 
 # --- 1. إعدادات الصفحة ---
-st.set_page_config(page_title="Clik-Plus | Qwen Auto-Vision", layout="wide", page_icon="🚢")
+st.set_page_config(page_title="Clik-Plus | Qwen Vision Pro", layout="wide", page_icon="🚢")
 
-# المفتاح الذي يبدأ بـ gsk_
-API_KEY = st.secrets.get("GROQ_API_KEY")
+# ضع مفتاحك الجديد هنا في Secrets باسم OPENROUTER_API_KEY
+API_KEY = st.secrets.get("OPENROUTER_API_KEY")
 
-# --- 2. دالة جلب موديل Qwen Vision المتاح حالياً في حسابك ---
-def find_live_qwen_vision_model():
-    try:
-        headers = {"Authorization": f"Bearer {API_KEY}"}
-        # جلب قائمة الموديلات التي يراها مفتاحك حالياً
-        response = requests.get("https://api.groq.com/openai/v1/models", headers=headers)
-        if response.status_code == 200:
-            models = response.json().get('data', [])
-            # البحث عن موديل يحتوي على qwen و vl أو vision
-            for m in models:
-                model_id = m['id'].lower()
-                if "qwen" in model_id and ("vl" in model_id or "vision" in model_id):
-                    return m['id']
-            
-            # إذا لم يجد VL، سيبحث عن أي موديل Qwen متاح كخيار ثانوي
-            for m in models:
-                if "qwen" in m['id'].lower():
-                    return m['id']
+# --- 2. محرك المعالجة (OpenRouter Engine) ---
+def process_with_qwen_vision(file_bytes, mime_type):
+    if not API_KEY:
+        st.error("⚠️ مفتاح OpenRouter مفقود في Secrets!")
         return None
-    except Exception as e:
-        st.error(f"خطأ في الاتصال بالقائمة: {str(e)}")
-        return None
-
-# --- 3. محرك المعالجة (Vision Engine) ---
-def process_file_with_qwen(file_bytes, mime_type):
-    target_model = find_live_qwen_vision_model()
     
-    if not target_model:
-        st.error("❌ لم يتم العثور على أي موديل Qwen في حسابك على Groq. تأكد من تفعيله.")
-        return None
-
     try:
         base64_image = base64.b64encode(file_bytes).decode('utf-8')
-        API_URL = "https://api.groq.com/openai/v1/chat/completions"
+        
+        # رابط OpenRouter الرسمي
+        API_URL = "https://openrouter.ai/api/v1/chat/completions"
+        
+        # اختيار أقوى موديل رؤية من Qwen متاح حالياً
+        MODEL_ID = "qwen/qwen-2.5-vl-72b-instruct" 
 
         headers = {
             "Authorization": f"Bearer {API_KEY}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://clik-plus.streamlit.app", # اختياري لـ OpenRouter
+            "X-Title": "Clik-Plus Customs Engine"
         }
 
-        # هيكلة الرسالة بما يتوافق مع موديلات الرؤية
         payload = {
-            "model": target_model,
+            "model": MODEL_ID,
             "messages": [
                 {
                     "role": "user",
                     "content": [
                         {
                             "type": "text", 
-                            "text": "Extract all items into JSON: hs_code, description, qty, weight, origin. Return ONLY JSON with an 'items' key."
+                            "text": "Extract all items into JSON format. Keys: hs_code, description, qty, weight, origin. Keep Arabic text. Return ONLY valid JSON with 'items' key."
                         },
                         {
                             "type": "image_url",
-                            "image_url": {"url": f"data:{mime_type};base64,{base64_image}"}
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{base64_image}"
+                            }
                         }
                     ]
                 }
@@ -72,46 +56,51 @@ def process_file_with_qwen(file_bytes, mime_type):
             "response_format": {"type": "json_object"}
         }
 
-        response = requests.post(API_URL, headers=headers, json=payload)
+        response = requests.post(API_URL, headers=headers, json=payload, timeout=60)
         res_json = response.json()
 
         if response.status_code != 200:
-            st.error(f"❌ خطأ ({target_model}): {res_json.get('error', {}).get('message')}")
+            st.error(f"❌ خطأ من OpenRouter: {res_json.get('error', {}).get('message', 'Unknown Error')}")
             return None
 
-        return json.loads(res_json['choices'][0]['message']['content'])
+        content = res_json['choices'][0]['message']['content']
+        return json.loads(content)
+
     except Exception as e:
-        st.error(f"❌ فشل المحرك: {str(e)}")
+        st.error(f"❌ فشل الاتصال بالمحرك: {str(e)}")
         return None
 
-# --- 4. واجهة المستخدم ---
-st.title("🚢 Clik-Plus | Qwen Vision Pro")
-st.markdown("استخراج البيانات الجمركية باستخدام نموذج **Qwen** المتاح في حسابك.")
+# --- 3. واجهة المستخدم ---
+st.title("🚢 Clik-Plus | Qwen 2.5 Vision")
+st.markdown("تم تفعيل محرك الرؤية عبر **OpenRouter**.")
 
-uploaded_file = st.file_uploader("ارفع الفاتورة أو المستند", type=['png', 'jpg', 'pdf'])
+uploaded_file = st.file_uploader("ارفع الفاتورة أو بوليصة الشحن", type=['png', 'jpg', 'jpeg', 'pdf'])
 
 if uploaded_file:
-    if st.button("🚀 بدء تحليل Qwen"):
-        with st.spinner("جاري فحص الموديلات النشطة وتحليل المستند..."):
+    if st.button("🚀 تحليل المستند (Qwen-VL)"):
+        with st.spinner("جاري 'رؤية' المستند واستخراج الجداول..."):
             final_items = []
-            file_content = uploaded_file.read()
+            file_bytes = uploaded_file.read()
 
             if uploaded_file.type == "application/pdf":
-                # تحويل كل صفحة PDF لصورة لأن Qwen Vision يحتاج صوراً
-                doc = fitz.open(stream=file_content, filetype="pdf")
+                # تحويل صفحات الـ PDF لصور لضمان تفعيل خاصية الرؤية
+                doc = fitz.open(stream=file_bytes, filetype="pdf")
                 for page in doc:
                     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                    data = process_file_with_qwen(pix.tobytes("jpeg"), "image/jpeg")
+                    data = process_with_qwen_vision(pix.tobytes("jpeg"), "image/jpeg")
                     if data and 'items' in data:
                         final_items.extend(data['items'])
                 doc.close()
             else:
-                # معالجة الصور
-                data = process_file_with_qwen(file_content, uploaded_file.type)
+                data = process_with_qwen_vision(file_bytes, uploaded_file.type)
                 if data and 'items' in data:
                     final_items = data['items']
 
             if final_items:
-                st.success("✅ اكتمل الاستخراج!")
+                st.success("✅ تم الاستخراج بنجاح!")
                 df = pd.DataFrame(final_items)
                 st.data_editor(df, use_container_width=True)
+                
+                # خيار التحميل
+                csv = df.to_csv(index=False).encode('utf-8-sig')
+                st.download_button("📥 تحميل النتائج CSV", csv, "extracted_data.csv", "text/csv")
