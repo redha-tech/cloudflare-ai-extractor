@@ -20,19 +20,37 @@ st.markdown("""
 # الحصول على المفتاح من Secrets
 GROQ_API_KEY = st.secrets.get("GROQ_API_KEY")
 
-# --- 2. وظيفة اختيار أحدث موديل متاح تلقائياً ---
 def get_latest_vision_model(client):
     try:
+        # جلب قائمة الموديلات المتاحة فعلياً في حسابك الآن
         models = client.models.list()
-        # البحث عن أحدث الموديلات التي تحتوي على كلمة vision وتصفيتها
+        
+        # البحث عن الموديلات التي تدعم الرؤية (Vision) والبحث عن الكلمات المفتاحية
+        # سنبحث عن llama-3.3 أو llama-3.2 (النسخ المستقرة) أو qwen-vl
+        available_ids = [m.id for m in models.data]
+        
+        # قائمة الأولويات (من الأحدث للأقدم)
+        priority_list = [
+            "llama-3.3-70b-versatile", # غالباً هذا هو البديل الأحدث
+            "llama-3.2-90b-vision-instant", # نسخة مستقرة بديلة للـ preview
+            "llama-3.2-11b-vision-instant",
+            "qwen-2.5-vl-72b",
+            "qwen-2-vl-7b-instruct"
+        ]
+        
+        for model in priority_list:
+            if model in available_ids:
+                return model
+        
+        # إذا لم يجد في القائمة، يبحث عن أي شيء يحتوي على vision
         vision_models = [m.id for m in models.data if "vision" in m.id.lower()]
         if vision_models:
-            # ترتيب تنازلي لاختيار الأحدث (مثلاً 3.3 قبل 3.2)
-            vision_models.sort(reverse=True)
             return vision_models[0]
-        return "llama-3.2-90b-vision-preview"  # موديل احتياطي في حال فشل البحث
-    except:
-        return "llama-3.2-11b-vision-preview"
+            
+        return "llama-3.2-11b-vision-instant" # الموديل الاحتياطي الأخير
+    except Exception as e:
+        st.warning(f"⚠️ فشل التحديث التلقائي، سيتم استخدام الموديل الاحتياطي: {e}")
+        return "llama-3.2-11b-vision-instant"
 
 # --- 3. دالة المعالجة الأساسية ---
 def process_with_auto_vision(file_bytes, mime_type):
