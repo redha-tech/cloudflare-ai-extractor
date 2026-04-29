@@ -1,9 +1,11 @@
 streamlit>=1.30.0
+google-generativeai
 mistralai>=1.1.0
 pandas
 xlsxwriter
-pdf2image     # لتحويل صفحات PDF إلى صور
-Pillow        # لمعالجة الصور وتجهيزها لـ Mistral
-openpyxl      # لقراءة ملفات Excel الحديثة
+pdf2image
+Pillow
+openpyxl
 pymupdf
 groq
+requests
