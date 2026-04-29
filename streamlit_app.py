@@ -5,6 +5,7 @@ import base64
 import requests
 import fitz  # PyMuPDF
 import google.generativeai as genai
+import re
 
 # --- 1. إعدادات الصفحة ---
 st.set_page_config(page_title="Clik-Plus | Smart Extraction Test", layout="wide")
