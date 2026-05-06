@@ -7,12 +7,12 @@ import time
 from groq import Groq
 
 # --- 1. إعدادات الصفحة ---
-st.set_page_config(page_title="Clik-Plus | Groq Llama 3.1", layout="wide")
+st.set_page_config(page_title="Clik-Plus | Groq Llama 3.1 Optimized", layout="wide")
 
-# جلب المفاتيح من Secrets (تأكد من تسمية المفتاح GROQ_API_KEY في الإعدادات)
+# جلب المفتاح من Secrets
 GROQ_API_KEY = st.secrets.get("GROQ_API_KEY")
 
-# --- 2. دالة محرك Groq Llama 3.1 8B ---
+# --- 2. دالة محرك Groq المتقدمة ---
 def process_with_groq_llama(text_content):
     if not GROQ_API_KEY:
         st.error("⚠️ مفتاح Groq مفقود في الـ Secrets!")
@@ -21,88 +21,99 @@ def process_with_groq_llama(text_content):
     try:
         client = Groq(api_key=GROQ_API_KEY)
         
-        # استخدام موديل 8B Instant لضمان السرعة وتجنب الـ Rate Limit
+        # استخدام موديل 8B Instant لقدرته العالية على تحمل التوكنز والسرعة
         MODEL_NAME = 'llama-3.1-8b-instant'
         
-        prompt = f"""
-        Analyze the following text extracted from a document and extract all items into a JSON object with an 'items' key.
-        Required fields for each item: 
-        - hs_code
-        - description
-        - qty
-        - weight
-        - origin
-        - amount (if available)
+        # Prompt محسّن لمنع التكرار ومعالجة بيانات الجمارك (Bahrain Customs Specific)
+        system_prompt = """
+        You are an expert Customs Declaration Data Extractor. 
+        Your goal is to extract ONLY the line items (goods) listed in the declaration.
+        
+        STRICT RULES:
+        1. Identification: Each item starts with an H.S. CODE (e.g., 320890909999). 
+        2. Merging: If multiple lines refer to the same H.S. Code and description, merge them into ONE item.
+        3. Exclusion: Do NOT extract names of companies (GULF AGENCY, etc.), customs points, or header info as items.
+        4. Data Fields:
+           - hs_code: The 8-12 digit tariff code.
+           - description: The goods description (e.g., 'Other', 'Paint', etc.).
+           - qty: The quantity (found near the 'QTY' or 'الكمية' labels).
+           - weight: The Net/Gross weight (found near '28.00' or similar values).
+           - origin: The country code (e.g., 'US', 'China').
+           - amount: The total value in foreign or local currency.
 
-        Text Data:
-        {text_content}
-
-        Return ONLY a valid JSON object. Do not include any explanation.
+        Return ONLY a valid JSON object. No conversational text.
         """
+        
+        user_content = f"EXTRACT ITEMS FROM THIS TEXT:\n{text_content}"
         
         chat_completion = client.chat.completions.create(
             messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content}
             ],
             model=MODEL_NAME,
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            temperature=0.1  # تقليل العشوائية لضمان دقة الأرقام
         )
         
-        result = chat_completion.choices[0].message.content
-        return json.loads(result)
+        return json.loads(chat_completion.choices[0].message.content)
 
     except Exception as e:
-        error_msg = str(e)
-        if "429" in error_msg:
-            st.warning("⏳ تم تجاوز حد السرعة. جاري الانتظار قليلاً...")
-            time.sleep(5)
-            return None
-        else:
-            st.error(f"❌ فشل Groq: {error_msg}")
-            return None
+        st.error(f"❌ Groq Error: {str(e)}")
+        return None
 
 # --- 3. واجهة المستخدم ---
-st.title("🚢 Clik-Plus | Groq Llama 3.1 Engine")
-st.info(f"المحرك النشط حالياً: Llama 3.1 8B Instant (Fast Extraction)")
+st.title("🚢 Clik-Plus | Customs Data Extractor")
+st.markdown("---")
 
-uploaded_file = st.file_uploader("ارفع المستند (صورة أو PDF)", type=['png', 'jpg', 'jpeg', 'pdf'])
+uploaded_file = st.file_uploader("ارفع البيان الجمركي (PDF)", type=['pdf'])
 
 if uploaded_file:
-    if st.button("🚀 تحليل البيانات"):
-        with st.spinner("جاري المعالجة عبر Groq..."):
-            final_items = []
+    if st.button("🚀 بدء التحليل الذكي"):
+        with st.spinner("جاري قراءة البيانات وتحليلها..."):
             
-            if uploaded_file.type == "application/pdf":
-                file_bytes = uploaded_file.read()
-                doc = fitz.open(stream=file_bytes, filetype="pdf")
-                full_text = ""
-                
-                # استخراج النصوص من كل صفحة بدلاً من الصور لأن Groq يعالج النصوص ببراعة
-                for page in doc:
-                    full_text += page.get_text() + "\n--- Page Break ---\n"
-                
-                data = process_with_groq_llama(full_text)
-                if data and 'items' in data:
-                    final_items.extend(data['items'])
-                doc.close()
-            else:
-                # في حال رفع صورة، نحتاج لاستخراج النص منها أولاً أو إرسال الوصف (OCR بسيط)
-                # ملاحظة: Groq موديل نصي، لذا يفضل رفع ملفات PDF مقروءة للحصول على أفضل نتائج
-                st.warning("⚠️ محرك Groq الحالي يعمل بشكل أفضل مع ملفات PDF التي تحتوي على نصوص.")
-                # هنا يمكن إضافة مكتبة مثل pytesseract إذا كانت الصور ضرورية
+            # قراءة الملف
+            file_bytes = uploaded_file.read()
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            
+            # استخراج النص من كافة الصفحات
+            full_text = ""
+            for page in doc:
+                full_text += page.get_text()
+            doc.close()
 
-            # عرض النتائج في جدول
-            if final_items:
-                st.success(f"تم استخراج {len(final_items)} أصناف بنجاح.")
-                df = pd.DataFrame(final_items)
+            # معالجة النص عبر Groq
+            result = process_with_groq_llama(full_text)
+            
+            if result and 'items' in result:
+                items = result['items']
                 
-                # ترتيب الأعمدة للعرض
-                cols = ['hs_code', 'description', 'qty', 'weight', 'origin', 'amount']
-                available_cols = [c for c in cols if c in df.columns]
-                
-                st.data_editor(df[available_cols], use_container_width=True)
+                if items:
+                    st.success(f"✅ تم استخراج {len(items)} بند بنجاح.")
+                    
+                    # تحويل لجدول
+                    df = pd.DataFrame(items)
+                    
+                    # التأكد من ترتيب الأعمدة المطلوبة
+                    cols_order = ['hs_code', 'description', 'qty', 'weight', 'origin', 'amount']
+                    actual_cols = [c for c in cols_order if c in df.columns]
+                    
+                    # عرض الجدول التفاعلي
+                    st.data_editor(df[actual_cols], use_container_width=True, num_rows="dynamic")
+                    
+                    # خيار تحميل البيانات
+                    csv = df.to_csv(index=False).encode('utf-8-sig')
+                    st.download_button("📥 تحميل النتائج (CSV)", csv, "extracted_items.csv", "text/csv")
+                else:
+                    st.warning("⚠️ لم يتم العثور على بنود واضحة في المستند.")
             else:
-                st.warning("لم يتم العثور على بيانات أو المجلد فارغ.")
+                st.error("⚠️ فشل في تحليل هيكل البيانات.")
+
+# إرشادات للمستخدم
+with st.sidebar:
+    st.header("تعليمات الاستخدام")
+    st.info("""
+    - يفضل رفع ملفات PDF الأصلية (Digital) للحصول على أعلى دقة.
+    - المحرك مصمم حالياً للتعرف على بيانات الجمارك (H.S. Code).
+    - إذا واجهت خطأ في التوكنز، حاول رفع صفحات أقل.
+    """)
