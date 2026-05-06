@@ -24,27 +24,29 @@ def process_with_groq_llama(text_content):
         # استخدام موديل 8B Instant لقدرته العالية على تحمل التوكنز والسرعة
         MODEL_NAME = 'llama-3.1-8b-instant'
         
-        # Prompt محسّن لمنع التكرار ومعالجة بيانات الجمارك (Bahrain Customs Specific)
+        # الـ Prompt مع إضافة مرحلة تحليل الهيكل (Identify Table Structure)
         system_prompt = """
         You are an expert Customs Declaration Data Extractor. 
-        Your goal is to extract ONLY the line items (goods) listed in the declaration.
+        Before extracting, first IDENTIFY THE TABLE STRUCTURE: 
+        1. Locate where the headers like 'H.S. CODE', 'Description', 'Weight', and 'QTY' are positioned.
+        2. Recognize that the document may have a multi-column or row-based layout.
         
-        STRICT RULES:
-        1. Identification: Each item starts with an H.S. CODE (e.g., 320890909999). 
-        2. Merging: If multiple lines refer to the same H.S. Code and description, merge them into ONE item.
-        3. Exclusion: Do NOT extract names of companies (GULF AGENCY, etc.), customs points, or header info as items.
+        STRICT EXTRACTION RULES:
+        1. Identification: Each item starts with a valid H.S. CODE (e.g., 320890909999).
+        2. Merging: If multiple rows belong to the same item/HS code, merge them into ONE single entry.
+        3. Exclusion: Do NOT extract company names (GULF AGENCY, etc.), customs point names, or footer/header info as line items.
         4. Data Fields:
            - hs_code: The 8-12 digit tariff code.
-           - description: The goods description (e.g., 'Other', 'Paint', etc.).
-           - qty: The quantity (found near the 'QTY' or 'الكمية' labels).
-           - weight: The Net/Gross weight (found near '28.00' or similar values).
-           - origin: The country code (e.g., 'US', 'China').
-           - amount: The total value in foreign or local currency.
+           - description: Full product description (exclude company names).
+           - qty: Quantity (look specifically for the 'QTY' or 'الكمية' column).
+           - weight: Net/Gross weight values (e.g., 28.00).
+           - origin: Country code (e.g., 'US', 'GB').
+           - amount: Total currency value for that specific item.
 
-        Return ONLY a valid JSON object. No conversational text.
+        Return ONLY a valid JSON object. Do not include any reasoning or conversational text.
         """
         
-        user_content = f"EXTRACT ITEMS FROM THIS TEXT:\n{text_content}"
+        user_content = f"ANALYZE STRUCTURE AND EXTRACT ITEMS FROM THIS TEXT:\n{text_content}"
         
         chat_completion = client.chat.completions.create(
             messages=[
@@ -53,7 +55,7 @@ def process_with_groq_llama(text_content):
             ],
             model=MODEL_NAME,
             response_format={"type": "json_object"},
-            temperature=0.1  # تقليل العشوائية لضمان دقة الأرقام
+            temperature=0.1  # بقاء القيمة منخفضة لضمان الدقة
         )
         
         return json.loads(chat_completion.choices[0].message.content)
@@ -64,13 +66,14 @@ def process_with_groq_llama(text_content):
 
 # --- 3. واجهة المستخدم ---
 st.title("🚢 Clik-Plus | Customs Data Extractor")
+st.info("المحرك الحالي مدعوم بميزة: Identify Table Structure لزيادة الدقة")
 st.markdown("---")
 
 uploaded_file = st.file_uploader("ارفع البيان الجمركي (PDF)", type=['pdf'])
 
 if uploaded_file:
     if st.button("🚀 بدء التحليل الذكي"):
-        with st.spinner("جاري قراءة البيانات وتحليلها..."):
+        with st.spinner("جاري تحليل هيكل المستند واستخراج البيانات..."):
             
             # قراءة الملف
             file_bytes = uploaded_file.read()
@@ -105,7 +108,7 @@ if uploaded_file:
                     csv = df.to_csv(index=False).encode('utf-8-sig')
                     st.download_button("📥 تحميل النتائج (CSV)", csv, "extracted_items.csv", "text/csv")
                 else:
-                    st.warning("⚠️ لم يتم العثور على بنود واضحة في المستند.")
+                    st.warning("⚠️ لم يتم العثور على بنود واضحة. قد يكون الهيكل غير مألوف.")
             else:
                 st.error("⚠️ فشل في تحليل هيكل البيانات.")
 
@@ -113,7 +116,6 @@ if uploaded_file:
 with st.sidebar:
     st.header("تعليمات الاستخدام")
     st.info("""
-    - يفضل رفع ملفات PDF الأصلية (Digital) للحصول على أعلى دقة.
-    - المحرك مصمم حالياً للتعرف على بيانات الجمارك (H.S. Code).
-    - إذا واجهت خطأ في التوكنز، حاول رفع صفحات أقل.
+    - ميزة 'Table Structure Identification' تساعد في فهم الفواتير ذات الأعمدة المتداخلة.
+    - المحرك يتجاهل تلقائياً ترويسة الصفحة ويركز على جداول البضائع.
     """)
