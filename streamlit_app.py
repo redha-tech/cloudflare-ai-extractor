@@ -1,97 +1,108 @@
 import streamlit as st
 import pandas as pd
 import json
-import base64
-import requests
 import fitz  # PyMuPDF
-import google.generativeai as genai
 import re
 import time
+from groq import Groq
 
 # --- 1. إعدادات الصفحة ---
-st.set_page_config(page_title="Clik-Plus | Gemini 3.1 Flash", layout="wide")
+st.set_page_config(page_title="Clik-Plus | Groq Llama 3.1", layout="wide")
 
-# جلب المفتاح من Secrets
-GEMINI_KEY = st.secrets.get("GEMINI_KEY")
+# جلب المفاتيح من Secrets (تأكد من تسمية المفتاح GROQ_API_KEY في الإعدادات)
+GROQ_API_KEY = st.secrets.get("GROQ_API_KEY")
 
-# --- 2. دالة محرك Gemini 3.1 Flash ---
-def process_with_gemini_3_1(file_bytes, mime_type):
-    if not GEMINI_KEY:
-        st.error("⚠️ مفتاح Gemini مفقود في الـ Secrets!")
+# --- 2. دالة محرك Groq Llama 3.1 8B ---
+def process_with_groq_llama(text_content):
+    if not GROQ_API_KEY:
+        st.error("⚠️ مفتاح Groq مفقود في الـ Secrets!")
         return None
     
     try:
-        genai.configure(api_key=GEMINI_KEY)
+        client = Groq(api_key=GROQ_API_KEY)
         
-        # تثبيت الموديل على الإصدار 3.1 فلاش
-        MODEL_NAME = 'gemini-3.1-flash'
+        # استخدام موديل 8B Instant لضمان السرعة وتجنب الـ Rate Limit
+        MODEL_NAME = 'llama-3.1-8b-instant'
         
-        model = genai.GenerativeModel(model_name=MODEL_NAME)
-        
-        prompt = """
-        Extract all items into a JSON object with an 'items' key. 
-        Required fields for each item: hs_code, description, qty, weight, origin.
-        Return ONLY valid JSON.
+        prompt = f"""
+        Analyze the following text extracted from a document and extract all items into a JSON object with an 'items' key.
+        Required fields for each item: 
+        - hs_code
+        - description
+        - qty
+        - weight
+        - origin
+        - amount (if available)
+
+        Text Data:
+        {text_content}
+
+        Return ONLY a valid JSON object. Do not include any explanation.
         """
         
-        content = [
-            {"mime_type": "image/jpeg", "data": file_bytes},
-            prompt
-        ]
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            model=MODEL_NAME,
+            response_format={"type": "json_object"}
+        )
         
-        # تنفيذ الطلب
-        response = model.generate_content(content)
-        
-        # تنظيف النص المستخرج لضمان استخراج JSON فقط
-        json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
-        if json_match:
-            return json.loads(json_match.group())
-        return json.loads(response.text)
+        result = chat_completion.choices[0].message.content
+        return json.loads(result)
 
     except Exception as e:
         error_msg = str(e)
         if "429" in error_msg:
-            st.warning("⏳ تم تجاوز حد السرعة (5 طلبات/دقيقة). جاري الانتظار 10 ثوانٍ والمحاولة مرة أخرى...")
-            time.sleep(10) # انتظار بسيط قبل المحاولة التلقائية
-            return process_with_gemini_3_1(file_bytes, mime_type) # إعادة المحاولة مرة واحدة
+            st.warning("⏳ تم تجاوز حد السرعة. جاري الانتظار قليلاً...")
+            time.sleep(5)
+            return None
         else:
-            st.error(f"❌ فشل Gemini 3.1: {error_msg}")
+            st.error(f"❌ فشل Groq: {error_msg}")
             return None
 
 # --- 3. واجهة المستخدم ---
-st.title("🚢 Clik-Plus | Gemini 3.1 Flash Engine")
-st.info(f"المحرك النشط حالياً: Gemini 3.1 Flash (Free Tier)")
+st.title("🚢 Clik-Plus | Groq Llama 3.1 Engine")
+st.info(f"المحرك النشط حالياً: Llama 3.1 8B Instant (Fast Extraction)")
 
 uploaded_file = st.file_uploader("ارفع المستند (صورة أو PDF)", type=['png', 'jpg', 'jpeg', 'pdf'])
 
 if uploaded_file:
     if st.button("🚀 تحليل البيانات"):
-        with st.spinner("جاري المعالجة عبر Gemini 3.1..."):
+        with st.spinner("جاري المعالجة عبر Groq..."):
             final_items = []
-            file_bytes = uploaded_file.read()
-
+            
             if uploaded_file.type == "application/pdf":
+                file_bytes = uploaded_file.read()
                 doc = fitz.open(stream=file_bytes, filetype="pdf")
+                full_text = ""
+                
+                # استخراج النصوص من كل صفحة بدلاً من الصور لأن Groq يعالج النصوص ببراعة
                 for page in doc:
-                    # تحويل الصفحة لصورة بدقة 2x
-                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-                    data = process_with_gemini_3_1(pix.tobytes("jpeg"), "image/jpeg")
-                    if data and 'items' in data:
-                        final_items.extend(data['items'])
-                    
-                    # ملاحظة: إذا كان الـ PDF طويل، يفضل إضافة انتظار بسيط هنا لتجنب خطأ 429
-                    if len(doc) > 1:
-                        time.sleep(2) 
+                    full_text += page.get_text() + "\n--- Page Break ---\n"
+                
+                data = process_with_groq_llama(full_text)
+                if data and 'items' in data:
+                    final_items.extend(data['items'])
                 doc.close()
             else:
-                data = process_with_gemini_3_1(file_bytes, uploaded_file.type)
-                if data and 'items' in data:
-                    final_items = data['items']
+                # في حال رفع صورة، نحتاج لاستخراج النص منها أولاً أو إرسال الوصف (OCR بسيط)
+                # ملاحظة: Groq موديل نصي، لذا يفضل رفع ملفات PDF مقروءة للحصول على أفضل نتائج
+                st.warning("⚠️ محرك Groq الحالي يعمل بشكل أفضل مع ملفات PDF التي تحتوي على نصوص.")
+                # هنا يمكن إضافة مكتبة مثل pytesseract إذا كانت الصور ضرورية
 
             # عرض النتائج في جدول
             if final_items:
                 st.success(f"تم استخراج {len(final_items)} أصناف بنجاح.")
                 df = pd.DataFrame(final_items)
-                st.data_editor(df, use_container_width=True)
+                
+                # ترتيب الأعمدة للعرض
+                cols = ['hs_code', 'description', 'qty', 'weight', 'origin', 'amount']
+                available_cols = [c for c in cols if c in df.columns]
+                
+                st.data_editor(df[available_cols], use_container_width=True)
             else:
-                st.warning("لم يتم العثور على بيانات. يرجى التأكد من أن الملف واضح ومن صحة المفاتيح.")
+                st.warning("لم يتم العثور على بيانات أو المجلد فارغ.")
