@@ -2,91 +2,91 @@ import streamlit as st
 import pandas as pd
 import json
 import fitz  # PyMuPDF
-import re
-import time
-from groq import Groq
+import google.generativeai as genai
 
 # --- 1. إعدادات الصفحة ---
-st.set_page_config(page_title="Clik-Plus | Groq Llama 3.1 Optimized", layout="wide")
+st.set_page_config(page_title="Clik-Plus | Gemini Optimized", layout="wide")
 
 # جلب المفتاح من Secrets
-GROQ_API_KEY = st.secrets.get("GROQ_API_KEY")
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY")
 
-# --- 2. دالة محرك Groq المتقدمة ---
-def process_with_groq_llama(text_content):
-    if not GROQ_API_KEY:
-        st.error("⚠️ مفتاح Groq مفقود في الـ Secrets!")
-        return None
-    
+# --- 2. إعداد محرك Gemini ---
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+else:
+    st.error("⚠️ مفتاح Gemini API مفقود في الـ Secrets!")
+
+def process_with_gemini(text_content):
     try:
-        client = Groq(api_key=GROQ_API_KEY)
-        
-        # استخدام موديل 8B Instant لقدرته العالية على تحمل التوكنز والسرعة
-        MODEL_NAME = 'llama-3.1-8b-instant'
-        
-        # الـ Prompt مع إضافة مرحلة تحليل الهيكل (Identify Table Structure)
-        system_prompt = """
-        You are an expert Customs Declaration Data Extractor. 
-        Before extracting, first IDENTIFY THE TABLE STRUCTURE: 
-        1. Locate where the headers like 'H.S. CODE', 'Description', 'Weight', and 'QTY' are positioned.
-        2. Recognize that the document may have a multi-column or row-based layout.
-        
-        STRICT EXTRACTION RULES:
-        1. Identification: Each item starts with a valid H.S. CODE (e.g., 320890909999).
-        2. Merging: If multiple rows belong to the same item/HS code, merge them into ONE single entry.
-        3. Exclusion: Do NOT extract company names (GULF AGENCY, etc.), customs point names, or footer/header info as line items.
-        4. Data Fields:
-           - hs_code: The 8-12 digit tariff code.
-           - description: Full product description (exclude company names).
-           - qty: Quantity (look specifically for the 'QTY' or 'الكمية' column).
-           - weight: Net/Gross weight values (e.g., 28.00).
-           - origin: Country code (e.g., 'US', 'GB').
-           - amount: Total currency value for that specific item.
-
-        Return ONLY a valid JSON object. Do not include any reasoning or conversational text.
-        """
-        
-        user_content = f"ANALYZE STRUCTURE AND EXTRACT ITEMS FROM THIS TEXT:\n{text_content}"
-        
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content}
-            ],
-            model=MODEL_NAME,
-            response_format={"type": "json_object"},
-            temperature=0.1  # بقاء القيمة منخفضة لضمان الدقة
+        # استخدام موديل Gemini 1.5 Pro للحصول على أعلى مستوى من الدقة (أو Flash للسرعة)
+        model = genai.GenerativeModel(
+            model_name='gemini-1.5-flash', # يمكنك تغييره لـ gemini-1.5-pro للدقة القصوى
+            generation_config={
+                "temperature": 0.1,
+                "top_p": 0.95,
+                "response_mime_type": "application/json",
+            }
         )
         
-        return json.loads(chat_completion.choices[0].message.content)
+        prompt = f"""
+        You are an expert Customs Declaration Data Extractor. 
+        Analyze the following customs document text and extract all line items into a JSON format.
+        
+        STRICT EXTRACTION RULES:
+        1. hs_code: Extract the tariff code (8-12 digits).
+        2. origin: Extract the country of origin (e.g., 'US', 'China', 'GB').
+        3. amount: Extract the total value or price for the item.
+        4. description: Full product description.
+        5. qty: Quantity of the item.
+        6. weight: Net or Gross weight.
+
+        JSON structure should be:
+        {{
+          "items": [
+            {{
+              "hs_code": "...",
+              "description": "...",
+              "qty": "...",
+              "weight": "...",
+              "origin": "...",
+              "amount": "..."
+            }}
+          ]
+        }}
+
+        TEXT TO ANALYZE:
+        {text_content}
+        """
+        
+        response = model.generate_content(prompt)
+        return json.loads(response.text)
 
     except Exception as e:
-        st.error(f"❌ Groq Error: {str(e)}")
+        st.error(f"❌ Gemini Error: {str(e)}")
         return None
 
 # --- 3. واجهة المستخدم ---
-st.title("🚢 Clik-Plus | Customs Data Extractor")
-st.info("المحرك الحالي مدعوم بميزة: Identify Table Structure لزيادة الدقة")
+st.title("🚢 Clik-Plus | Gemini Customs Extractor")
+st.info("تم تحديث المحرك لاستخدام Google Gemini لاستخراج الرموز الجمركية، بلد المنشأ، والقيمة.")
 st.markdown("---")
 
 uploaded_file = st.file_uploader("ارفع البيان الجمركي (PDF)", type=['pdf'])
 
 if uploaded_file:
-    if st.button("🚀 بدء التحليل الذكي"):
-        with st.spinner("جاري تحليل هيكل المستند واستخراج البيانات..."):
+    if st.button("🚀 بدء التحليل الذكي بواسطة Gemini"):
+        with st.spinner("جاري تحليل المستند واستخراج البيانات..."):
             
             # قراءة الملف
             file_bytes = uploaded_file.read()
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             
-            # استخراج النص من كافة الصفحات
             full_text = ""
             for page in doc:
                 full_text += page.get_text()
             doc.close()
 
-            # معالجة النص عبر Groq
-            result = process_with_groq_llama(full_text)
+            # معالجة النص عبر Gemini
+            result = process_with_gemini(full_text)
             
             if result and 'items' in result:
                 items = result['items']
@@ -97,8 +97,8 @@ if uploaded_file:
                     # تحويل لجدول
                     df = pd.DataFrame(items)
                     
-                    # التأكد من ترتيب الأعمدة المطلوبة
-                    cols_order = ['hs_code', 'description', 'qty', 'weight', 'origin', 'amount']
+                    # ترتيب الأعمدة المطلوبة
+                    cols_order = ['hs_code', 'origin', 'amount', 'description', 'qty', 'weight']
                     actual_cols = [c for c in cols_order if c in df.columns]
                     
                     # عرض الجدول التفاعلي
@@ -106,16 +106,19 @@ if uploaded_file:
                     
                     # خيار تحميل البيانات
                     csv = df.to_csv(index=False).encode('utf-8-sig')
-                    st.download_button("📥 تحميل النتائج (CSV)", csv, "extracted_items.csv", "text/csv")
+                    st.download_button("📥 تحميل النتائج (CSV)", csv, "gemini_extracted_items.csv", "text/csv")
                 else:
-                    st.warning("⚠️ لم يتم العثور على بنود واضحة. قد يكون الهيكل غير مألوف.")
+                    st.warning("⚠️ لم يتم العثور على بنود. تأكد من جودة ملف الـ PDF.")
             else:
-                st.error("⚠️ فشل في تحليل هيكل البيانات.")
+                st.error("⚠️ فشل في تحليل البيانات. تأكد من صحة الـ API Key.")
 
 # إرشادات للمستخدم
 with st.sidebar:
-    st.header("تعليمات الاستخدام")
+    st.header("إعدادات المحرك")
+    st.write("**الموديل:** Gemini 1.5 Flash (Auto-optimized)")
     st.info("""
-    - ميزة 'Table Structure Identification' تساعد في فهم الفواتير ذات الأعمدة المتداخلة.
-    - المحرك يتجاهل تلقائياً ترويسة الصفحة ويركز على جداول البضائع.
+    - تم تحسين الاستخراج للتركيز على:
+        1. الرمز الجمركي (HS Code).
+        2. بلد المنشأ (Origin).
+        3. القيمة المالية (Amount).
     """)
